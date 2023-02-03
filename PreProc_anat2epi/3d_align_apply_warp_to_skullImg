@@ -1,0 +1,20 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+
+# Full brain with skull anat
+set anat = {$subj_init}_uniden_avg
+set warp = {$anat}_uni_SS_wholebrain_unpad_warped_3dQ_WARP
+set anat_to_warp = {$anat}_uni_wholebrain_unpad_warped
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+
+## Apply warp
+3dNwarpApply -nwarp $warp+orig \
+		-source $anat_to_warp+orig \
+		-prefix {$anat_to_warp}_3dQ

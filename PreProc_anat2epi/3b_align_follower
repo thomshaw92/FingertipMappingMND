@@ -1,0 +1,2 @@
+# Need to align full anatomical to epi
+# Apply transfor from step 3 using volreg_follower1 script up one dir in Parent_scripts

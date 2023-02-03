@@ -1,0 +1,57 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+set runs = (`count -digits 2 1 6`)
+# set runs = (`count -digits 2 1 5`)
+set TR_count = 336
+set tr_counts = ( $TR_count $TR_count $TR_count $TR_count $TR_count $TR_count )
+
+
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+
+# ========================== auto block: outcount ==========================
+# data check: compute outlier fraction for each volume
+touch out.pre_ss_warn.txt
+#### ME: changed polort to 5 from 3
+foreach run ( $runs )
+    3dToutcount -automask -fraction -polort 5 -legendre                     \
+                pb00.$subj.r$run.tcat+orig > outcount.r$run.1D
+
+    # outliers at TR 0 might suggest pre-steady state TRs
+    if ( `1deval -a outcount.r$run.1D"{0}" -expr "step(a-0.4)"` ) then
+        echo "** TR #0 outliers: possible pre-steady state TRs in run $run" \
+            >> out.pre_ss_warn.txt
+    endif
+end
+
+# catenate outlier counts into a single time series
+cat outcount.r*.1D > outcount_rall.1D
+
+# get run number and TR index for minimum outlier volume
+set minindex = `3dTstat -argmin -prefix - outcount_rall.1D\'`
+set ovals = ( `1d_tool.py -set_run_lengths $tr_counts                       \
+                          -index_to_run_tr $minindex` )
+# save run and TR indices for extraction of vr_base_min_outlier
+set minoutrun = $ovals[1]
+set minouttr  = $ovals[2]
+echo "min outlier: run $minoutrun, TR $minouttr" | tee out.min_outlier.txt
+
+# ================================ despike =================================
+# apply 3dDespike to each run
+foreach run ( $runs )
+    3dDespike -NEW -nomask -prefix pb01.$subj.r$run.despike \
+        pb00.$subj.r$run.tcat+orig
+end
+
+# --------------------------------
+# extract volreg registration base
+3dbucket -prefix vr_base_min_outlier                        \
+    pb01.$subj.r$minoutrun.despike+orig"[$minouttr]"
+
+
