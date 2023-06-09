@@ -1,0 +1,90 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+
+# Always leave this as non-SS (full). Some below expect skull stripped and some not - below it adds _SS where needed
+set anat = {$subj_init}_uniden_avg_uni
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+set al_method = 1
+
+# If using method 1/3
+set move = giant
+
+# If using method 2, you need to do manual steps before
+# If using method 3 because there might be an issue using unifized image, you need to copy this image over manually
+
+
+# ================================= align ==================================
+
+if ($al_method == 1) then
+	## Original from afni_proc.py = giant move
+	## Edited so it uses my good SS image, and it tells it there is no skull and not to SS
+	# for e2a: compute anat alignment transformation to EPI registration base
+	# (new anat will be intermediate, stripped, CC_uniden_r2_ns+orig)
+		align_epi_anat.py -anat2epi -anat {$anat}_SS+orig \
+			-anat_has_skull no \
+		       -suffix _{$move} \
+		       -epi vr_base_min_outlier+orig -epi_base 0    \
+		       -epi_strip 3dAutomask                        \
+		       -{$move}_move -partial_coverage                \
+		       -volreg off -tshift off
+endif
+
+
+if ($al_method == 2) then
+	# RUN START MANUALLY
+	#### ME: Nudge, then 3dAllineate protocol from web - use SS anat
+	# Useful for some where method 1 did not work (possible because head was too big and cut off)
+
+	# Zpad file to be moved (anat) so it doesn't get clipped
+	# 3dZeropad -I 100 -S 100 -A 100 -P 100 -L 100 -R 100 -prefix rm.{$anat}_SS_zpad {$anat}_SS+orig
+
+	# Now nudge anat to epi in afni - press print and you get the below
+	# 3drotate -quintic -clipit -rotate 0.00I 0.00R 0.00A -ashift -4.00S -60.00L -10.00P -prefix rm.{$anat}_SS_zpad_nudged rm.{$anat}_SS_zpad+orig
+
+	# Zpad to remove excess
+	# 3dZeropad -I -185 -S -120 -A -110 -P -110 -L -210 -R -0 -prefix rm.{$anat}_SS_zpad_nudged_unpad rm.{$anat}_SS_zpad_nudged+orig
+
+	#### ME: Align - 3dA from web example
+	3dAllineate \
+	 	-base vr_base_min_outlier+orig \
+	 	-input rm.{$anat}_SS_zpad_nudged_unpad+orig \
+	 	-prefix {$anat}_SS_N3dA+orig \
+	 	-1Dmatrix_save {$anat}_SS_N3dA_aff12.1D \
+	 	-cost lpc \
+		-final wsinc5 \
+		-source_automask -autoweight \
+		-twopass \
+		-verb
+endif
+
+
+## Usually wont be used - unless big failure with all other SS methods above
+
+if ($al_method == 3) then
+
+# set anat = {$subj_init}_uniden_avg
+# set anat_dir = /scratch/inode/uqhdemp1/Data/Anatomicals/{$subj_init}/Previous_steps
+# 3dcopy {$anat_dir}/{$anat}.nii \
+#    $output_dir/{$anat}
+
+	## PROB WONT USE - My skull stripping is best
+	## Original from afni_proc.py - ORIG ANAT (w skull - gets stripped here) + giant move
+	# for e2a: compute anat alignment transformation to EPI registration base
+	# (new anat will be intermediate, stripped image)
+	align_epi_anat.py -anat2epi -anat {$anat}+orig \
+		-suffix _giant_origanat            \
+		-epi vr_base_min_outlier+orig -epi_base 0    \
+		-epi_strip 3dAutomask                        \
+		-{$move}_move -partial_coverage                \
+		-volreg off -tshift off
+endif
+# Removed from #3 		-save_skullstrip \
+
+

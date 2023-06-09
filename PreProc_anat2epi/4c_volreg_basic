@@ -1,0 +1,39 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = 
+set subj = P00_{$subj_init}
+set runs = (`count -digits 2 1 6`)
+
+set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+cd $output_dir
+
+# Typical usage is vr_base_min_outlier (CC run 2, TR 52)
+set base = vr_base_min_outlier
+
+# If this does not work well make a new base
+# set baserun = 3
+# set baseTR = 3
+# set base = manual_base_r0{$baserun}_TR{$baseTR}+orig
+# 3dbucket -prefix $base pb01.$subj.r0{$baserun}.despike+orig"[$baseTR]"
+
+
+# ================================= volreg =================================
+# align each dset to base volume
+foreach run ( $runs )
+    # register each volume to the base image
+    3dvolreg -verbose -zpad 1 -base $base+orig        \
+             -1Dfile dfile.r$run.1D -prefix pb02.$subj.r$run.volreg \
+             -Fourier                                               \
+             pb01.$subj.r$run.despike+orig
+end
+
+# make a single file of registration params
+cat dfile.r*.1D > dfile_rall.1D
+
+# compute motion magnitude time series: the Euclidean norm
+# (sqrt(sum squares)) of the motion parameter derivatives
+1d_tool.py -infile dfile_rall.1D -set_nruns 6                       \
+           -derivative  -collapse_cols euclidean_norm               \
+           -write motion_${subj}_enorm.1D
+

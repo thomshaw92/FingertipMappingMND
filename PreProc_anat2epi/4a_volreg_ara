@@ -1,0 +1,75 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+set nruns = 6
+# set nruns = 5
+set runs = (`count -digits 2 1 $nruns`)
+
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+# Typical usage is vr_base_min_outlier
+set base = vr_base_min_outlier+orig
+
+# If this does not work well make a new base
+# set baserun = 3
+# set baseTR = 3
+# set base = manual_base_r0{$baserun}_TR{$baseTR}+orig
+# 3dbucket -prefix $base pb01.$subj.r0{$baserun}.despike+orig"[$baseTR]"
+
+
+# ================================= volreg =================================
+# align each dset to base volume, across runs
+foreach run ( $runs )
+    # extract MIN_OUTLIER index for current run
+    set min_outlier_index = `3dTstat -argmin -prefix - outcount.r$run.1D\'`
+
+    # extract volreg base for this run
+    3dbucket -prefix vr_base_per_run_r$run                                  \
+        pb01.$subj.r$run.despike+orig"[$min_outlier_index]"
+
+    # and compute xforms for cross-run allin to vr_base
+	#### ME: changed base to variable
+    3dAllineate -base $base                              \
+                -source vr_base_per_run_r$run+orig                          \
+                -1Dfile vr_xrun_allin_dfile.m12.r$run.1D                    \
+                -1Dmatrix_save mat.vr_xrun_allin.r$run.aff12.1D             \
+                -autoweight -source_automask                                \
+                -lpa -cubic
+
+    # register each volume to the base image
+    3dvolreg -verbose -zpad 1 -base vr_base_per_run_r$run+orig  \
+             -1Dfile dfile.r$run.1D -prefix rm.epi.volreg.r$run \
+             -Fourier                                           \
+             -1Dmatrix_save mat.r$run.vr.aff12.1D               \
+             pb01.$subj.r$run.despike+orig
+
+    # catenate volreg/post_vr_allin xforms
+    cat_matvec -ONELINE                                         \
+               mat.vr_xrun_allin.r$run.aff12.1D                 \
+               mat.r$run.vr.aff12.1D > mat.r$run.warp.aff12.1D
+
+    # apply catenated xform: volreg/post_vr_allin
+    3dAllineate                                                 \
+                -input pb01.$subj.r$run.despike+orig            \
+                -1Dmatrix_apply mat.r$run.warp.aff12.1D         \
+                -final wsinc5                                   \
+                -prefix pb02.$subj.r$run.volreg
+    
+end
+
+# make a single file of registration params
+cat dfile.r*.1D > dfile_rall.1D
+
+# compute motion magnitude time series: the Euclidean norm
+# (sqrt(sum squares)) of the motion parameter derivatives
+1d_tool.py -infile dfile_rall.1D -set_nruns $nruns                   \
+           -derivative  -collapse_cols euclidean_norm           \
+           -write motion_${subj}_enorm.1D
+
+
+

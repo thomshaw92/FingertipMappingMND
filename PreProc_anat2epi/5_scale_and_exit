@@ -1,0 +1,67 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+set runs = (`count -digits 2 1 6`)
+# set runs = (`count -digits 2 1 5`)
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+# Change this to 1 if you want review ouput
+set review_output = 0
+
+
+# ================================= scale ==================================
+# scale each voxel time series to have a mean of 100
+# (be sure no negatives creep in)
+# (subject to a range of [0,200])
+foreach run ( $runs )
+    3dTstat -prefix rm.mean_r$run pb02.$subj.r$run.volreg+orig
+    3dcalc -a pb02.$subj.r$run.volreg+orig -b rm.mean_r$run+orig \
+           -expr 'min(200, a/b*100)*step(a)*step(b)'             \
+           -prefix pb03.$subj.r$run.scale
+end
+
+
+# ========================== auto block: finalize ==========================
+
+# remove temporary files
+\rm -f rm.*
+
+
+
+if (review_output == 1) then
+# ================== auto block: generate review scripts ===================
+
+# generate a review script for the unprocessed EPI data
+gen_epi_review.py -script @epi_review.$subj \
+    -dsets pb00.$subj.r*.tcat+orig.HEAD
+
+# if the basic subject review script is here, run it
+# (want this to be the last text output)
+if ( -e @ss_review_basic ) then
+    ./@ss_review_basic |& tee out.ss_review.$subj.txt
+
+    # generate html ss review pages
+    # (akin to static images from running @ss_review_driver)
+    apqc_make_tcsh.py -review_style basic -subj_dir . \
+        -uvar_json out.ss_review_uvars.json
+    tcsh @ss_review_html |& tee out.review_html
+    apqc_make_html.py -qc_dir QC_$subj
+
+    echo "\nconsider running: \n\n    afni_open -b $subj.results/QC_$subj/index.html\n"
+endif
+
+endif
+
+
+
+# return to parent directory (just in case...)
+cd ..
+
+echo "execution finished: `date`"
+
+

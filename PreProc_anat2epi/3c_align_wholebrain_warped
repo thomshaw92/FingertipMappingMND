@@ -1,0 +1,33 @@
+#!/bin/tcsh -xef
+
+## Set up
+set subj_init = LV
+set subj = P003_{$subj_init}
+
+# Always leave this as non-SS (full). Some below expect skull stripped and some not - below it adds _SS where needed
+set anat = {$subj_init}_uniden_avg_uni
+
+# set output_dir = /scratch/inode/uqhdemp1/Fingertip_maps/{$subj}/$subj.results
+set output_dir = /scratch/inode/uqhdemp1/Columns_analysis/{$subj}/$subj.results
+cd $output_dir
+
+# Set which input
+set anat_input_3dQ = {$anat}_SS_wholebrain_unpad_warped
+
+
+# ================================= align ==================================
+
+
+# Resample base to source (so are same grid)
+# May not need to do this if tried it already in script 3
+3dresample -master {$anat_input_3dQ}+orig -input vr_base_min_outlier+orig -prefix vr_base_min_outlier_resamp
+
+## Use to improve output from method 1 by non linear warping
+# Anat is nonlinearly aligned using the global warping - align to epi (base) so partial coverage is less of an issue
+3dQwarp -source {$anat_input_3dQ}+orig.HEAD \
+	-base   vr_base_min_outlier_resamp+orig \
+	-prefix {$anat_input_3dQ}_3dQ \
+	-lpc -maxlev 0 -verb
+
+rm vr_base_min_outlier_resamp+orig*
+
