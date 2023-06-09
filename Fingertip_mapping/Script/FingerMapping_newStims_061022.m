@@ -14,7 +14,7 @@
 
 %% Clean up
 
-% Matlab cleaning things
+% Matlab cleaning things5
 sca;
 close all;
 clearvars;
@@ -30,7 +30,7 @@ input(sprintf('Check tactor orders before starting'));
 clear ans
 
 % Set which computer: 0 = home mac, 1 = scanner PC
-scannerPC = 0;
+scannerPC = 1;
 
 % Set number of channels - WONT EVER CHANGE FROM 6
 num_chans = 6;
@@ -92,7 +92,7 @@ taczeros = tacorder(1, num_tactors+1:end);
 
 % Turn things on = 1, or off = 0
 psychvis = 1;
-tactorsOn = 0;
+tactorsOn = 1;
 
 % turn off sci notation
 format long g
@@ -101,7 +101,7 @@ format long g
 %% General stimulation timing details
 
 % Set TR
-TR = 1.780;
+TR = 1.920;
 % TR = 1.920; % Ash's old TR was 1.992 (NOT USING)
 % TR = 1; % for debugging - for working out how many stimuli/ second with different pulse types
 
@@ -404,13 +404,13 @@ clear ans
 if scannerPC == 0
     homedir = '/Users/uqhdemp1/Documents/2022/Analysis & fMRI General/Fingertip maps/Script_new_stims'; % office mac
 else
-    homedir = 'ADD'; % ADD FOR STIMS PC
+    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Fingertip_mapping\Script'; % ADD FOR STIMS PC
 end
 
 % Set data directory
 if scannerPC == 0
     % Set to individual sub folder
-    datadir = [homedir, '/Data/', subcode, '_', p_init,'/'];
+    datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
     
     % Make individual sub name folder if it's not there already
     if ~exist(datadir, 'dir')
@@ -469,7 +469,9 @@ if psychvis == 1
     screens=Screen('Screens'); screenNumber=max(screens); clear screens
 
     %Open Screen
-    [window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/2);
+%     [window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/4); %255/2 CHANGED TO 255/4
+    backgroundCol = [128 128 128];
+    [window, windowRect]=Screen('OpenWindow', screenNumber, backgroundCol);
     % [window, windowRect]=Screen('OpenWindow', screenNumber,[], [10 20 600 300]); % small debugging window
 
     % Set screen parameters
@@ -496,7 +498,7 @@ else
 end
 
 % Wait
-WaitSecs(1*TR);
+WaitSecs(3*TR);
 clear ans
 
 
@@ -533,7 +535,7 @@ for trial = 1:size(timings,2)
             while ~timedout_tr
                 if psychvis == 1  
                     % say we are waiting
-                    DrawFormattedText(window, sprintf('Waiting for trigger'), 'center', 'center', [0 0 0]);
+                    DrawFormattedText(window, sprintf('Waiting for scanner'), 'center', 'center', [0 0 0]);
                     Screen('Flip', window);
                 else
                 end

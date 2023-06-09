@@ -1,5 +1,4 @@
 
-
 % % TO DO
 % Change things for PC - homedir (116)
 % CHECK WHAT NUMBERS COME OUT OF BUTTON BOX AND ADJUST ISCOR CALC FOR THIS
@@ -10,6 +9,16 @@
 
 % % To check
 % Block and trial are right number (313, 337)
+
+% % AY as of 12/4
+% keycodes are set up so that digit 2 can be responded to with button 1,
+% etc. The correct/incorrect calculation has been amended to address this.
+% The above has been tested re: accuracy and miss information calculated at
+% the end of the block, appropriate numbers shown (ignoring thumb).
+% command window outputs the frequency stimulated when stimulating, as well
+% as the target finger. Also outputs that stims are not playing during
+% rest/dead TR time.
+% still need to add hte total number of measurements for sequence setup.
 
 
 %% Clean up
@@ -30,7 +39,7 @@ input(sprintf('Check tactor orders before starting'));
 clear ans
 
 % Set which computer: 0 = home mac, 1 = scanner PC
-scannerPC = 0;
+scannerPC = 1;
 
 % Set number of channels - WONT EVER CHANGE FROM 6
 num_chans = 6;
@@ -126,9 +135,9 @@ clear ans
 
 % Set home directory
 if scannerPC == 0
-    homedir = '/Users/uqhdemp1/Documents/2022/Columns II/Scanner task'; % office mac
+    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\';%'/Users/uqhdemp1/Documents/2022/Columns II/Scanner task'; % office mac
 else
-    homedir = 'ADD'; % ADD FOR STIMS PC
+    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\'; %'ADD'; % ADD FOR STIMS PC
 end
 
 % Set data directory
@@ -172,7 +181,7 @@ if run_num == 0
     blocks = 1;
 else
     % main exp
-    trials = 30; % should be 30
+    trials = 30; % should be 30 -  otherwise 20min blocks
     blocks = 2; % should be 2
 end
 
@@ -416,12 +425,15 @@ for block = 1:blocks
                 
                 if timedout_tr == true
                     % Restrict for all keys except 1-5 (trigger should be suppressed as is 5% inside psychtoolbox) - CHECK THIS WORKS
-                    nums = '12345';
-                    keynames = mat2cell(nums, 1, ones(length(nums), 1));
+%                     nums = '12345'; % AY this only works for numpad, not scanner buttons
+%                     keynames = mat2cell(nums, 1, ones(length(nums), 1));
+                    keynames = {};
+                    keynames{1, 1} = '1!'; keynames{1, 2} = '2@'; keynames{1, 3} = '3#';keynames{1, 4} = '4$';keynames{1, 5} = '5%';
                     keynames = KbName(keynames);
                     RestrictKeysForKbCheck(keynames);
                     clear keynames nums ans
-    
+                    
+                    
                     % Start both timers
                     t0 = GetSecs; tic
                 end
@@ -455,8 +467,11 @@ for block = 1:blocks
         tm = tm+1;
         
                 % FOR DEBUGGING ONLY - Tells you what freq and oddball
-                % DrawFormattedText(window, sprintf('freq %d, oddball %d', freq, oddfing), 'center', 'center', [0 0 0]); Screen('Flip', window);
-                    
+%                 DrawFormattedText(window, sprintf('freq %d, oddball %d', freq, oddfing), 'center', 'center', [0 0 0]); Screen('Flip', window);
+        % Tell operator which freq is playing, and which is the target
+        % finger
+        sprintf('freq %d, oddball %d', freq, oddfing)
+        
         % Play sound - load then play
         PsychPortAudio('FillBuffer', pahandle, playstim); PsychPortAudio('Start', pahandle, 1, 0);
         WaitSecs('UntilTime', t0 + timings(4,tm) );
@@ -517,7 +532,7 @@ for block = 1:blocks
 
         % Check correct (if not a miss '999')
         if resp ~= 999
-            if oddfing == resp
+            if oddfing == resp+1 %AY this accounts for the 4 buttons box responding to D2:D5
                 % Correct
                 iscor = 1;
             else
@@ -526,8 +541,6 @@ for block = 1:blocks
             end
         else
         end
-
-
         clear resp oddfing
         
         % Add corr dets
@@ -551,7 +564,7 @@ for block = 1:blocks
 %         end
 
         clear iscor
-
+        
         % Wait (back up post oddball wait, in case of key-press breaking early)
         WaitSecs('UntilTime', t0 + timings(4,tm) );
         clear ans
@@ -563,10 +576,12 @@ for block = 1:blocks
         % Add to timings - ITI (extra)
         output(row_tictocITI,trial) = timings(1,tm);
         output(row_TRITI,trial) = timings(row_t_realTRtime,tm);
- 
-    % End trial loop
+               
+        % End trial loop
     end
-    
+        
+    % tell experimenter that nothing is playing on stims
+    sprintf('stims not playing')
     
     %% end Dead TRs
     
@@ -582,6 +597,9 @@ for block = 1:blocks
     
     WaitSecs('UntilTime', t0 + timings(4,tm) );
     clear ans
+    
+    % ADDED_H23 tell exp dead TRs over
+    sprintf('Dead TRs over')
 
     % Add to timings - end dead TRs
     timings(1,tm) = toc; tic
@@ -670,7 +688,7 @@ for b = 1:blocks
             responded(:,r) = data_block(:,tl);
         end
     end
-    clear blockname data_block
+%     clear blockname data_block
 end
 clear m r tl b data
 
@@ -812,6 +830,9 @@ clear row_t_realTRtime
 
 %% Final save
 
+% ADDED_H23 tell exp closing
+sprintf('End calcs - closing')
+    
 save([datadir, filename]);
 
 sca

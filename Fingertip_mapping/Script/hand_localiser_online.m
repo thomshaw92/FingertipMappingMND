@@ -2,38 +2,6 @@
 
 %% Make short test sound
 
-% Set chans - never changes
-num_chans = 6;
-
-% Set num tactors
-num_tactors = 5;
-
-% Enter between?
-enter = 1;
-
-% Pre-set order (weird numbering needed to get tactors to play 1-5)
-order = 0;
-
-% Get order for number of tactors
-if num_tactors == 5
-    % % This order is different from the ones below as I moved the plugs in the front of the soundcard so now we get sound in left to right order plugging chans1/2 in to port 2.1, chans 3/4 into centre/bass, chans 5/6 into port 5.1)
-    order_tacs = [1, 2, 3, 5, 6, 4]; % channel 4 does nothing (on testplay 6)
-    
-    % order_tacs = [1, 2, 5, 3, 4, 6];
-    % order_tacs = [1, 2, 5, 3, 4, 6];
-    % order_tacs = [1, 2, 5, 6, 3, 4];
-else
-end
-
-% General sound settings
-amp = 5;
-Fs = 48000;
-dur = 1; % in seconds
-time = (1 : dur * Fs);
-phase = 0;
-% phase = 4.8; % phase shift - we aren't using this so set to 0
-freq = 10;
-
 % Get duration & freq for test sound
 dur_loop = .1;
 freq_loop = 20;

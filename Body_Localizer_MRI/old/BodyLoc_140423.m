@@ -28,16 +28,19 @@ format long g
 %% Scanning details
 
 % Number of TRs before stimulation starts
-TRsdead = 5; % How many do we want??
+TRsdead = 8; % edited 12/4
+% TRsdead = 5; % How many do we want??
 
 % Movement TRs
-TRsmove = 6; % How many do we want??
+TRsmove = 11; % edited 14/4
+% TRsmove = 7; % edited from 6 to 7
 
 % Rest TRs
 TRsrest = TRsmove;
 
 % TR
-TR = 1.753; % EDIT
+TR = 0.900; % edited 12/04/23
+% TR = 1.466; % edited 9/1/23
 
 
 %% Get subj & filename details
@@ -71,11 +74,11 @@ clear ans
 %% Make dir for that participant in Data dir if it doesn't exist already
 
 % Set home directory
-homedir = '/Users/uqhdemp1/Documents/2022/MND/Body Loc'; % office mac
+homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Body_Localizer_MRI';%uqhdemp1/Documents/2022/MND/Body Loc'; % office mac
 % homedir = ADD FOR STIMS PC;
 
 % Set data directory
-datadir = [homedir, '/Data/', subcode, '_', p_init,'/'];
+datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
 % PC % datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
 clear homedir
 clear datetag p_init subcode
@@ -101,7 +104,7 @@ if run_num == 0
     trials = 3;
 else
     % main exp
-    blocks = 4; % should be 4
+    blocks = 3; % should be 4
     trials = size(subconds,2); % should be 7
 end
 
@@ -213,13 +216,14 @@ PsychDefaultSetup(2);
 
 %Choosing the display
 screens=Screen('Screens'); screenNumber=max(screens); clear screens
-
+backgroundCol = [128 128 128];
 %Open Screen
-[window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/2);
+% [window, windowRect] = PsychImaging('OpenWindow', screenNumber,backgroundCol);
+[window, windowRect] = Screen('OpenWindow', screenNumber,backgroundCol);
 % [window, windowRect]=Screen('OpenWindow', screenNumber,[], [10 20 600 300]); % small debugging window
 
 % Set screen parameters
-Screen('TextSize', window, 40);
+Screen('TextSize', window, 40); % was 40 12/4
 
 % Set up alpha-blending for smooth (anti-aliased) lines --> fixation cross below wont run without it
 Screen('BlendFunction', window, 'GL_SRC_ALPHA', 'GL_ONE_MINUS_SRC_ALPHA');
@@ -233,16 +237,18 @@ clear ans
 %% General instructions & instruction things
 
 % Instruction
-DrawFormattedText(window, sprintf('Please move the body part instructed on screen \n for the whole time the message is on screen\n\n Please also try to keep your head as still as possible \n\n Thank you!'), 'center', 'center', [0 0 0]);
+DrawFormattedText(window, sprintf('Please move the body \n part instructed on screen \n for the whole time the \n message is on screen\n\n Please also try to keep \n your head as still as possible \n\n Thank you!'), 'center', 'center', [0 0 0]);
+% DrawFormattedText(window, sprintf('Please move the body part instructed on screen \n for the whole time the message is on screen\n\n Please also try to keep your head as still as possible \n\n Thank you!'), 'center', 'center', [0 0 0]);
+
 Screen('Flip', window);
 
 % Wait
-WaitSecs(1*TR);
+WaitSecs(3*TR);
 clear ans
 
 % Set generic rest message
-msg_rest = sprintf('Please rest (lie still)');
-
+msg_rest = sprintf('Please lie still');
+% msg_rest = sprintf('Please rest (lie still)');
 
 %% Wait for first trigger then pause for dead TRs
 
@@ -253,6 +259,15 @@ Screen('Flip', window);
 % Wait for trigger
 wait_for_trigger
 
+%% set up params for a flicker dot (to manage frequency of movements)
+% Define parameters
+dotSize = 80; % Size of the dot in pixels
+flickerRate = 1 / TR; % Calculate flicker rate in Hz
+dotCol1 = [34 139 34];
+dotCol2 = backgroundCol;
+screenHeight = windowRect(4); % Height of the screen in pixels
+lowerHalfRect = [0 screenHeight/2 windowRect(3) screenHeight]; % Define the rectangle for the lower half of the screen
+maxDuration = (TRsmove*TR)-TR;% This seems to be the only way not to add 70ms to the trial time; Max duration of flickering in seconds
 
 %% Event loop - Loop through all timing events in timings mat
 
@@ -269,7 +284,7 @@ for el = 1:(size(timings,2))
 
         % Present fixation
         Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
-
+        
     elseif event_type == 100
         % % Rest
 
@@ -278,16 +293,45 @@ for el = 1:(size(timings,2))
 
     elseif ismember(event_type, subconds)
         % % Movement
-
-        % Present move message on screen
-        DrawFormattedText(window, sprintf('Please move your %s', cond_names(event_type)), 'center', 'center', [0 0 0]);
-
+        DrawFormattedText(window, sprintf('%s', cond_names(event_type)), 'center', 'center', [0 0 0]);
+        
+       
     else
     end
 
     % Flip screen to reveal
     Screen('Flip', window);
 
+     if ismember(event_type, subconds)
+        % Flickr
+        % Set up timing
+        t1 = GetSecs(); % Get the initial time
+        
+        % Start flickering
+        while true
+            % Check if time limit has been reached
+            currentTime = GetSecs();
+            if currentTime - t1 >= maxDuration
+                break; % Exit the loop if time limit has been reached
+            end
+            
+            % Alternate between dot colors
+            if mod(round((currentTime - t1) * flickerRate), 2) == 0
+                dotCol = dotCol1; % Color 1 (green)
+            else
+                dotCol = dotCol2; % Color 2 (grey)
+            end
+            
+            % Draw the dot
+            DrawFormattedText(window, sprintf('Please move your %s', cond_names(event_type)), 'center', 'center', [0 0 0]);
+            Screen('FillOval', window, dotCol, CenterRect([0 0 dotSize dotSize], lowerHalfRect));
+            Screen('Flip', window);
+            
+            % Wait for the next flicker
+            WaitSecs(1 / flickerRate);
+        end
+    end
+    
     % Wait until time elapsed
     WaitSecs('UntilTime', t0 + timings(row_cumTR, el) );
     clear ans

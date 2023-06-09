@@ -79,7 +79,7 @@ pahandle = PsychPortAudio('Open', [], [], 2, Fs, num_chans, 0);
 
 % Play test sound - can fix issues with timing later
 % PsychPortAudio('Start', pahandle, 1, 0);
-
+% pause(5)
 % l = 1;
 for l = 1:6
 
@@ -124,7 +124,7 @@ for l = 1:6
     % Wait
     % WaitSecs(dur);
     WaitSecs(size(x,2)/Fs);
-
+% pause(1)
 end
 % clear testplay stim ans
 
