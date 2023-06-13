@@ -19,6 +19,9 @@ This SOP provides a procedure for conducting a hand/finger testing battery, whic
 ## Participant Preparation
 - Prior to any testing, the participant should understand the purpose and the procedures of the tests. 
 - Make certain the participant is comfortable. 
+- For CONTROLS - use dominant hand for testing
+- i.e., for goniometer JSP task, the dominant hand is the one enacting the proprioceptive (mimic) task. The dominant hand taps, does force, and force matching, and vibros
+-  For MND - MORE affected side (by self report). NB this is not ONSET side necessarily. 
 
 ---
 
@@ -39,6 +42,7 @@ This SOP provides a procedure for conducting a hand/finger testing battery, whic
     - Explain to the participant that they will grip the dynamometer until it registers a target force (either 5 or 10 kilos), then try to replicate that force with eyes closed.
     - Participant squeezes the dynamometer to the target force with their eyes open, noting the sensation.
     - Remember to press 'start' on the dynamometer at each trial
+    - **THE EXPERIMENTER will hold the dynamometer.** Assistance may be required to assist with the correct weight. 
     - Participant then closes their eyes and squeezes the dynamometer to reproduce the force sensation.
     - Participant says "stop" when they believe they've matched the force.
 - **Scoring:** Record the force value on the dynamometer at the time when participant says "stop". Compute the difference from the target force to get the error score.
@@ -50,7 +54,7 @@ This SOP provides a procedure for conducting a hand/finger testing battery, whic
 - **Procedure:** 
     - Explain to the participant that they will squeeze the dynamometer as hard as they can.
     - Participant grips the dynamometer in their hand and applies the maximum amount of force they can muster.
-    - For each fingethrip, participant will grip dynamometer with the opposite hand or lay the dynamometer flat on the table
+    - For each fingethrip, **THE EXPERIMENTER will hold the dynamometer.**
     - For each finger, a pincer grip must be employed, pulling the dynamometer down with the relevant finger
 - **Scoring:** Record the peak force displayed on the dynamometer. Repeat the test for each finger and hand. Press start each time.
 
@@ -74,8 +78,10 @@ This SOP provides a procedure for conducting a hand/finger testing battery, whic
 - **Objective:** To assess the ability to discern changes in the vibration applied to each finger.
 - **Procedure:** 
     - Explain to the participant that they will be detecting changes in the vibration applied to each finger.
+    - There is a practice run (up to 3) before the run. 
     - Apply a stimulus to the participant's finger using a piezotactile stimulator.
     - Use behavioural-tactile script. 4 blocks of about 7 mins each.
+    - Ptp must press "enter" after each response.
 - **Scoring:** Script will score and plot psychometric function for each finger. Save results.
 
 ---
