@@ -101,7 +101,7 @@ if run_num == 0
     trials = 3;
 else
     % main exp
-    blocks = 4; % should be 4
+    blocks = 3; % was 4
     trials = size(subconds,2); % should be 7
 end
 
@@ -218,7 +218,7 @@ backgroundCol = [128 128 128];
 %[window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/2);
 [window, windowRect]=Screen('OpenWindow', screenNumber, backgroundCol);
 % Set screen parameters
-Screen('TextSize', window, 40);
+Screen('TextSize', window, 70);
 
 % Set up alpha-blending for smooth (anti-aliased) lines --> fixation cross below wont run without it
 Screen('BlendFunction', window, 'GL_SRC_ALPHA', 'GL_ONE_MINUS_SRC_ALPHA');
