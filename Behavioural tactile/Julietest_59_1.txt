@@ -1,3 +1,0 @@
-Participant: Julietest
-Age: 59
-Finger: 1

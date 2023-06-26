@@ -1,6 +1,6 @@
 
-% % (most recent) Pasted  from fit_logit_reg in Learning Layers
-% % (previously) Pasted from s3_fit_sub_logit_reg script in Columns II/ curve fitting directory
+
+% % Pasted from s3_fit_sub_logit_reg script in Columns II/ curve fitting directory
 
 
 %% Fit a logestic regression model
@@ -18,8 +18,8 @@
 [params, ~, ~] = glmfit(dataStims', [dataResp' dataCount'], 'binomial', 'logit');
 
 % Fit to extended stimulus range to get smooth curve
-curve = glmval(params, dataStims_long', 'logit'); % longer dataStims makes it smoother (below)
+curve(sr2,:) = glmval(params, dataStims_long', 'logit'); % longer dataStims makes it smoother (below)
 
 % Fit a curve for the parameters calculated above (within stimulus range) - used for calculating R2 later
-curve_range = glmval(params, dataStims', 'logit')'; % using smaller set of data stims makes a clunky line with edges, but this is useful for getting R2 below
+curve_range(sr2,:) = glmval(params, dataStims', 'logit')'; % using smaller set of data stims makes a clunky line with edges, but this is useful for getting R2 below
 
