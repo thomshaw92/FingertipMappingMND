@@ -55,15 +55,16 @@ else
     testnameadd = 'all_fings';
 end
 
+
 % Add vals to thresh var
 if curve_fit_error(sr2,1) == 0
-    thresh.coords = [curve(sr2,i) dataStims_long(i)];
+    thresh.coords.(testnameadd) = [curve(sr2,i) dataStims_long(i)];
 else
-    thresh.coords = [curve(sr2,i) dataStims(i)];
+    thresh.coords.(testnameadd) = [curve(sr2,i) dataStims(i)];
 end
 
 % Pull thresh for plotting reasons
-this_thresh = thresh.coords;
+this_thresh = thresh.coords.(testnameadd);
 
 % Plot threshold
 plot(this_thresh(2), this_thresh(1), 'ko', 'MarkerFaceColor', 'k');
