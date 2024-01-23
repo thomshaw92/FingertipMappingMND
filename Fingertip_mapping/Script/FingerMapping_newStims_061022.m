@@ -1,5 +1,3 @@
-
-
 % % To do - Ash/ Tom
 % TURN TACTORS ON (now playing in debugging mode, just visuals that were added to check it is working and no stims) (line 91, change to 1 from 0)
 % Work out with Alex/ the tactors what pulse type to use - call me about this so we can chat about it
@@ -23,7 +21,7 @@ clearvars;
 %% Important tactor and sound card settings
 
 % Remind to set comp vol and amp vol
-input(sprintf('Set comp vol to X, turn knobs on amp to full'));
+input(sprintf('Set comp vol to 50, turn knobs on amp to full'));
 
 % Remind to check tactor orders
 input(sprintf('Check tactor orders before starting'));
@@ -45,8 +43,10 @@ phaseorblocked = str2double(phaseorblocked);
 
 % (where relevant) Set whether running 1 = forward e.g., 1,2,3,4,5 or 2 = backward e.g., 5,4,3,2,1
 if phaseorblocked == 1
-    forwardback = input('1 = Phase forward (1,2,3,4,5); 2 = Phase backward (5,4,3,2,1): ', 's');
-    forwardback = str2double(forwardback);
+    % 280723 HDJ edit - Not using backward, set to always forward
+    forwardback = 1;
+    % forwardback = input('1 = Phase forward (1,2,3,4,5); 2 = Phase backward (5,4,3,2,1): ', 's');
+    % forwardback = str2double(forwardback);
     % forwardback = 1;
 else
 end
@@ -498,7 +498,7 @@ else
 end
 
 % Wait
-WaitSecs(3*TR);
+WaitSecs(1*TR);
 clear ans
 
 

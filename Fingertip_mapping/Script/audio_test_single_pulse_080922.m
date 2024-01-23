@@ -1,4 +1,6 @@
 
+
+
 % Set chans - never changes
 num_chans = 6;
 
@@ -81,7 +83,7 @@ pahandle = PsychPortAudio('Open', [], [], 2, Fs, num_chans, 0);
 % PsychPortAudio('Start', pahandle, 1, 0);
 
 % l = 1;
-for l = 1:6
+for l = 1:5
 
 
     if order == 1
