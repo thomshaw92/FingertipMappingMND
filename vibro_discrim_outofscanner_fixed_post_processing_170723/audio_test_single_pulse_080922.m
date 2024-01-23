@@ -81,7 +81,7 @@ pahandle = PsychPortAudio('Open', [], [], 2, Fs, num_chans, 0);
 % PsychPortAudio('Start', pahandle, 1, 0);
 % pause(5)
 % l = 1;
-for l = 1:6
+for l = 1:5
 
 
     if order == 1

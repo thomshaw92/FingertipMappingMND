@@ -1,7 +1,7 @@
 
 
-% TO DO
-% Change settings - visuals on
+%% ADDED REMINDER 12/01/24
+input(sprintf('CHECK VOLUME IS 100'));
 
 
 %% Clean up
@@ -22,12 +22,12 @@ tic
 
 %% General details
 
-dets.psychvis = 0; % visual display
-dets.tactorson = 1; % 0 = tactors not on
-dets.keylock = 0; % lock the keyboard while experiment is on so you can't type anything other than specified keys
-dets.figs = 1; % 1 = pop figures on screen for performance at the end; 0 = dont
-dets.saveoutput = 1; % 0 = dont save
-dets.shuffle_trials = 1; % 1 = shuffle; 0 = don't
+dets.psychvis = 0; % USE = 0; 1 = visual display on; 0 = off; STAYING OFF FOR SCANNER OUTER ROOM COMP DUE TO WEIRD LAGS
+dets.tactorson = 1; % USE = 1; 0 = tactors not on; 1 = on
+dets.keylock = 0; % USE = 0; lock the keyboard while experiment is on so you can't type anything other than specified keys
+dets.figs = 1; % USE = 1; 1 = pop figures on screen for performance at the end; 0 = dont
+dets.saveoutput = 1; % USE = 1; 0 = dont save; 1 = do save
+dets.shuffle_trials = 1; % USE = 1; 1 = shuffle; 0 = don't
 dets.fit_type = 1; % 1 = logit reg; 2 = (don't use) Weibull
 dets.output_by_fing = 1; % 1 = split output for each finger tested; 0 = collapses over fingers tested
 dets.pulsetype = 2; % 1 = sine wave; 2 = spaced pulse
@@ -40,15 +40,18 @@ thresh.value = .75;
 %% Experimenter input section
 
 % participant details
-% subcode = 'HDJ'; % Manually enter for piloting
-subcode = input('Participant code: ', 's');
+% subinit = 'HDJ'; % Manually enter for piloting
+subinit = input('Participant initials: ', 's');
+subinit = upper(subinit);
+
 % subnum = 1;
-% subnum = input('SUBJECT Number: ');
-% if subnum < 10
-%      subcode = ['P00' num2str(subnum)];
-% else
-%      subcode = ['P0' num2str(subnum)];
-% end
+subnum = input('Participant number: ');
+if subnum < 10
+     subcode = ['sub-00' num2str(subnum), '_', subinit];
+else
+     subcode = ['sub-0' num2str(subnum), '_', subinit];
+end
+clear subnum subinit
 
 % Which hand?
 % hand = 2; % 1 = left; 2 = right
@@ -57,6 +60,12 @@ hand = input('Which hand are you testing? Left = 1, right = 2: ');
 % Experimental or practice
 % maintrialsQ = 1; % 1 = experimental (main) trials; 0 = practice
 maintrialsQ = input('Experimental or practice trials? Experimental = 1, practice = 0: ');
+
+% Which session?
+sessNum = input('What number session is this? e.g., 1/2: ');
+
+% Patient or control
+PatientOrControl = input('Patient = 1, or Control = 0?: ');
 
 
 %% Script determines extra participant settings
@@ -74,6 +83,14 @@ elseif hand == 2
 else
 end
 
+% Get patient or control name
+if PatientOrControl == 1
+    PatientOrControl = 'Patients';
+elseif PatientOrControl == 0
+    PatientOrControl = 'Controls';
+else
+end
+
 % Date tag
 clockdata = clock;
 clockdata = clockdata(1:5);
@@ -81,8 +98,8 @@ datetag = sprintf('%d_%d_%d_%d_%d',clockdata);
 clear clockdata
 
 % Build filename
-filename = [datetag, '_', subcode, '-', 'VibroTest_', 'hand', hand_name_short];
-clear hand_name_short
+filename = [datetag, '-', subcode, '-', 'VibroTest_sess', num2str(sessNum)];
+% clear hand_name_short
 
 % Add practice to filename (if relevant)
 if maintrialsQ == 0
@@ -93,6 +110,12 @@ end
 % Set number of channels - WONT EVER CHANGE
 num_chans = 6;
 
+% If training - turn off output by finger (collapsing over fingers for training purposes)
+if maintrialsQ == 0
+    dets.output_by_fing = 0;
+else
+end
+
 
 %% Pop filename on screen so experimenter can check participant dets and cancel out if details are wrong
 
@@ -102,8 +125,9 @@ clear ans
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-datadir = [pwd, '/Data/', subcode,'/'];
-% PC % datadir = [pwd, '\Data', subcode, '_', subcode,'\'];
+% PC
+datadir = [pwd, '\Data\', PatientOrControl, '\', subcode,'\sess', num2str(sessNum), '\'];
+% Mac % datadir = [pwd, '/Data/', PatientOrControl, '/', subcode,'/sess', num2str(sessNum), '/'];
 
 if ~exist(datadir, 'dir')
     mkdir(datadir);
@@ -213,11 +237,11 @@ if maintrialsQ == 1
 else
     % Practice
     types_dif = [repmat(dif_levels, 1, trials )'];
-    types_dif = Shuffle(types_dif);
+    % types_dif = Shuffle(types_dif);
     types_dif = types_dif(1:trials, 1);
     types_dif = flip(sort(types_dif));
-    types_dif(1:2,:) = dif_levels(1);
-    types_dif(end,:) = dif_levels(end);
+    % types_dif(1:2,:) = dif_levels(1);
+    % types_dif(end,:) = dif_levels(end);
 end
 
 % Get fing types (and hand types for some conditions where hand is always the same)
@@ -239,7 +263,7 @@ if maintrialsQ == 1
     clear tf
 else
     types_faster = repmat(1:2, 1, trials)';
-    types_faster = Shuffle(types_faster);
+    % types_faster = Shuffle(types_faster);
     types_faster = types_faster(1:trials, 1);
 end
 
@@ -253,11 +277,11 @@ if dets.shuffle_trials == 1
     types_faster = types_faster(order);
     types_fing = types_fing(order);
 
-    if maintrialsQ == 1
-        % Shuffle types dif (does not get shuffled in practice as we want the easy trials first)
+    % if maintrialsQ == 1
+        % NOT USING % Shuffle types dif (does not get shuffled in practice as we want the easy trials first)
         types_dif = types_dif(order);
-    else
-    end    
+    % else
+    % end    
 else
 end
 clear order
@@ -328,8 +352,8 @@ if dets.psychvis == 1
 
     %Open Screen
     % [window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/2); % do not use PsychImaging call, does not work most of the time, use the below
-    [window, windowRect]=Screen('OpenWindow', screenNumber,[128 128 128]); % From Ash
-    % [window, windowRect]=Screen('OpenWindow', screenNumber,[], [10 20 600 300]); % small debugging window
+    % [window, windowRect]=Screen('OpenWindow', screenNumber,[128 128 128]); % From Ash
+    [window, windowRect]=Screen('OpenWindow', screenNumber,[], [10 20 600 300]); % small debugging window
 
     % Set screen parameters
     Screen('TextSize', window, 40);
@@ -393,6 +417,9 @@ end
 
 %% Trial loop
 
+% Clear command window
+home
+
 % Start trial counter at ZERO always
 c = 0;
 
@@ -444,6 +471,7 @@ for trial = 1:size(trial_mat,1)
 
     % Get appropriate matrix of sounds for this finger (all frequencies)
     sound_trial = eval(sprintf('x%d', curr_fing));
+    clear curr_fing
 
     % Get the standard frequency sound for this finger
     sound_standard = sound_trial{1,:};
@@ -622,7 +650,6 @@ for trial = 1:size(trial_mat,1)
     if trial_feed == 1
         if dets.psychvis == 0
             input([feedback ' - press any key to continue'], 's');
-
         else
             Screen('TextSize', window, 40);
             DrawFormattedText(window, sprintf(feedback), 'center', 'center', feedcol);
@@ -630,6 +657,9 @@ for trial = 1:size(trial_mat,1)
         end
     else
     end
+    
+    % Clear command window
+    home
 
     clear ans feedcol feedback trial_feed
     clear curr_diff curr_tactor curr_faster
@@ -693,10 +723,10 @@ for trial = 1:size(trial_mat,1)
                     if(keyIsDown), break; end
                 end
 
-                clear keyIsDown feedback_end timedout_b
-                clear feedback_end
+                clear keyIsDown timedout_b
 
             end
+            clear feedback_end
             
             WaitSecs(2);
             
@@ -749,6 +779,7 @@ end
 
 clear keylock psychtool trainQ screenNumber lineWidthPix window windowRect xCentre yCentre allCoords
 clear ans
+clear pahandle
 
 % Save
 if dets.saveoutput == 1
@@ -757,14 +788,17 @@ else
 end
 
 
+% Get experimental duration
+experimental_duration = toc/60;
 
 
 %% AT END - Score data
 
 if c == trials
     
-    % Re add for debugging: row_dif = 3; row_fing = 4; row_faster = 5; row_resp = 8; row_cor = 9;
-
+    % Re add for debugging: row_dif = 3; row_fing = 4; row_faster = 5; row_resp = 8; row_cor = 9; datadir = [pwd, '/'];
+    % For some inital subs also: sessNum = 1; filename = [filename, '_sess', num2str(sessNum)]; thresh = rmfield(thresh, 'coords');
+     
     % Determine how many times we need to do scoring/ plotting - depending on whether output is bring split by finger or not
     % Re add for debugging % dets.output_by_fing = 1;
     if dets.output_by_fing == 1
@@ -774,7 +808,7 @@ if c == trials
     end
 
     % Score data
-    score_prop_data
+    score_prop_data_030723
     
     if dets.saveoutput == 1
         save([datadir,filename]);
@@ -818,8 +852,12 @@ if c == trials
    
             % Get acc
             %  old - only gets acc for all trials - acc_plot = mean(perc_cor_block);
-            if sr2 < (num_fings) && maintrialsQ == 1
-                corrs = trial_mat(trial_mat(:,row_fing) == sr2, row_cor);
+            if maintrialsQ == 1
+                if sr2 < scoreplot_reps
+                    corrs = trial_mat(trial_mat(:,row_fing) == sr2, row_cor);
+                else
+                    corrs = trial_mat(:, row_cor);
+                end
             else
                 corrs = trial_mat(:, row_cor);
             end
@@ -896,11 +934,14 @@ if c == trials
         
         % Save image
         if dets.saveoutput == 1
+            
             % Generate name to save figure
             if maintrialsQ == 1
-                titlef = sprintf([num2str(datetag), ' - ', subcode, ' - Test - ', fit_name, ' fit']);
+                titlef = sprintf([num2str(filename), ' ', fit_name, ' fit']);
+                % titlef = sprintf([num2str(datetag), ' - ', subcode, ' - Test - ', fit_name, ' fit']);
             elseif maintrialsQ == 0
-                titlef = sprintf([num2str(datetag), ' - ', subcode, ' - Practice test']);
+                titlef = sprintf([num2str(filename)]);
+                % titlef = sprintf([num2str(datetag), ' - ', subcode, ' - Practice test']);
             else
             end
             
@@ -946,10 +987,6 @@ if c == trials
     
 % end of is trials finished loop
 end
-
-
-%% Get experimental duration
-experimental_duration = toc/60;
 
 
 %% Final save
