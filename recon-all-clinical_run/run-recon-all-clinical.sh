@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Save the command just in case.
-CURR_CMD="$0 $@"
+log () {
+    echo "$(date '+%Y-%m-%d %H:%M:%S')   $*" | tee -a $LOG_FILE
+}
+
 # Parse arguments.
 PARSED=$(getopt --options "" --long data-dir:,output-dir:,dry-run,n-threads:,freesurfer-version:,excluded: --name "$0" -- "$@")
 # Terminate script if failed to parse arguments properly.
@@ -64,11 +66,27 @@ if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="${DATA_DIR}/mri/bids/derivatives/recon-all-clinical"
 fi
 
+# Set up logging file and a file for failed sessions (for re-running).
+# Make sure to include all the arguments and git info for reproducibility.
 LOG_FILE=$OUTPUT_DIR/run-recon-all-clinical_$(date "+%Y-%m-%d_%H-%M-%S").log
-echo "$0 --data-dir $DATA_DIR --output-dir $OUTPUT_DIR --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --excluded ${EXCLUDED[*]}" > $LOG_FILE
+log "$0 --data-dir $DATA_DIR --output-dir $OUTPUT_DIR --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --excluded ${EXCLUDED[*]}"
+
+GIT_URL=$(git config --get remote.origin.url)
+if [[ -z "$GIT_URL" ]]; then
+    log "No git information"
+else
+    COMMIT=$(git rev-parse HEAD)
+    GIT_PATH=$(git ls-files --full-name "$0")
+    if [[ -z "$GIT_PATH" ]]; then
+        GIT_PATH="<$(basename $0) - not added to git yet>"
+    fi
+    log "${GIT_URL%.git}/blob/$COMMIT/$GIT_PATH"
+fi
+
 echo "" >> $LOG_FILE
-FAILED_FILE=$OUTPUT_DIR/recon-all-clinical-failed_$(date "+%Y-%m-%d_%H-%M-%S").txt
-# Make sure that each run starts with an empty failed list.
+
+FAILED_FILE=$OUTPUT_DIR/run-recon-all-clinical-failed_$(date "+%Y-%m-%d_%H-%M-%S").txt
+# Make sure that each run starts with an empty failed session file.
 > $FAILED_FILE
 
 for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
@@ -76,7 +94,7 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
     SUB=$(basename "$SUBJECT_DIR")
 
     if [[ " ${EXCLUDED[*]} " =~ " $SUB " ]]; then
-        echo "Skipping excluded subject: $SUB" | tee -a $LOG_FILE
+        log "Skipping excluded subject: $SUB"
         continue
     fi
 
@@ -86,11 +104,11 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
 
         # These sessions should have incomplete/invalid data.
         if [[ "$SESSION" == "ses-00" ]]; then
-            echo "Skipping $SUB/$SESSION"
+            log "Skipping $SUB/$SESSION (00 are not valid sessions)"
             continue
         fi
 
-        echo "--------------- Starting $SUB/$SESSION ---------------" | tee -a $LOG_FILE
+        log "Starting $SUB/$SESSION"
 
         # Run processing but make sure that any errors are recorded in the
         # log file.
@@ -101,10 +119,10 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
         fi
 
         if [ $? -ne 0 ]; then
-            echo "!!---------- Error processing $SUB/$SESSION ----------!!" | tee -a $LOG_FILE
+            log "Error processing $SUB/$SESSION"
             echo "$SUB $SESSION" >> "$FAILED_FILE"
         fi
 
-        echo "--------------- Done with $SUB/$SESSION ---------------" | tee -a $LOG_FILE
+        log "Done with $SUB/$SESSION"
     done
 done
