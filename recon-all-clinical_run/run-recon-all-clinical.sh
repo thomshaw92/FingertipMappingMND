@@ -113,9 +113,9 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
         # Run processing but make sure that any errors are recorded in the
         # log file.
         if [ "$DRYRUN" = true ]; then
-            $HOME/freesurfer.sh --data-dir $DATA_DIR/mri/bids --free-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --dry-run
+            $HOME/freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --dry-run
         else
-            $HOME/freesurfer.sh --data-dir $DATA_DIR/mri/bids --free-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION 2>> $LOG_FILE
+            $HOME/freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION 2>> $LOG_FILE
         fi
 
         if [ $? -ne 0 ]; then

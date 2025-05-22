@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Parse arguments.
-PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,free-dir:,dry-run,n-threads:,freesurfer-version --name "$0" -- "$@")
+PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,output-dir:,dry-run,n-threads:,freesurfer-version: --name "$0" -- "$@")
 # Terminate script if failed to parse arguments properly.
 if [[ $? -ne 0 ]]; then
     echo "Error parsing options" >&2
@@ -14,7 +14,7 @@ eval set -- "$PARSED"
 SUB=""
 SESSION=""
 DATA_DIR="."
-FREE_DIR=""
+OUTPUT_DIR=""
 DRYRUN=false
 # Use the max amount of available threads as the default value.
 NTHREADS=`nproc`
@@ -35,8 +35,8 @@ while true; do
             DATA_DIR="$2"
             shift 2
             ;;
-        --free-dir)
-            FREE_DIR="$2"
+        --output-dir)
+            OUTPUT_DIR="$2"
             shift 2
             ;;
         --dry-run)
@@ -63,8 +63,8 @@ while true; do
 done
 
 # Make sure to use the DATA_DIR value that was sepcified in the arguments.
-if [[ -z "$FREE_DIR" ]]; then
-    FREE_DIR="${DATA_DIR}/freesurfer"
+if [[ -z "$OUTPUT_DIR" ]]; then
+    OUTPUT_DIR="${DATA_DIR}/recon-all-clinical"
 fi
 
 # Check that required arguments are present. If not terminate the script.
@@ -77,7 +77,7 @@ INPUT_IMAGE="${DATA_DIR}/${SUB}/${SESSION}/anat/${SUB}_${SESSION}_acq-UNIDEN_run
 
 # Setting this env variable is strongly recommended but I don't understand why.
 # It works even without it.
-# SINGULARITY_BINDPATH=$FREE_DIR,$BASE_DIR,$SINGULARITY_BINDPATH
+# SINGULARITY_BINDPATH=$OUTPUT_DIR,$BASE_DIR,$SINGULARITY_BINDPATH
 # echo $SINGULARITY_BINDPATH
 
 MODULE=freesurfer/$FREESURFER_VERSION
@@ -95,22 +95,30 @@ export SINGULARITYENV_FS_ALLOW_DEEP=$FS_ALLOW_DEEP
 
 # Where output will be stored. Freesurfer will create a folder in here with the
 # name of the subject as used in the recon-all-clinical command (2nd argument).
-export SUBJECTS_DIR=$FREE_DIR/output
+SUBJECTS_DIR=$OUTPUT_DIR/output
 mkdir -p $SUBJECTS_DIR
 export SINGULARITYENV_SUBJECTS_DIR=$SUBJECTS_DIR
-
+RESULT_DIR=$SUBJECTS_DIR/$SUB/$SESSION
 
 if [ "$DRYRUN" = true ]; then
     FREE_COMMAND="
     recon-all-clinical.sh $INPUT_IMAGE
                           $SUB/$SESSION
                           $NTHREADS
-                          $SUBJECTS_DIR             
+                          $SUBJECTS_DIR
+    
+    mri_convert $RESULT_DIR/mri/brain.mgz $RESULT_DIR/mri/brain.nii.gz
+    mri_convert $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/native.nii.gz
     "
     echo "$FREE_COMMAND"
 else
-    recon-all-clinical.sh $INPUT_IMAGE  \
-                          $SUB/$SESSION      \
-                          $NTHREADS     \
+    recon-all-clinical.sh $INPUT_IMAGE      \
+                          $SUB/$SESSION     \
+                          $NTHREADS         \
                           $SUBJECTS_DIR
+
+    mri_convert $RESULT_DIR/mri/brain.mgz $RESULT_DIR/mri/brain.nii.gz
+    mri_convert $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/native.nii.gz
 fi
+
+
