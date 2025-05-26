@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # Parse arguments.
 PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,output-dir:,dry-run,keep-files: --name "$0" -- "$@")
@@ -80,7 +81,7 @@ fi
 if [[ -n "$KEEP_FILES_FILE" ]]; then
     if [[ -f "$KEEP_FILES_FILE" ]]; then
         KEEP_FILES=()
-        while IFS= read -r filename; do
+        while IFS= read -r filename || [[ -n "$filename" ]]; do
             # Skip empty lines or lines that are just whitespace
             [[ -z "$filename" || "$filename" =~ ^[[:space:]]*$ ]] && continue
             
@@ -96,18 +97,24 @@ fi
 
 # Where output will be stored.
 RESULT_DIR=$OUTPUT_DIR/output/$SUB/$SESSION
-TEMP_DIR="$OUTPUT_DIR/tmp/keep-files"
+# Set up the temp dir and make sure it is deleted afterwards. Check that it was
+# actually created as well.
+TEMP_DIR=$(mktemp -d --tmpdir="$OUTPUT_DIR")
+trap 'rm -rf "$TEMP_DIR"' EXIT
+if [[ ! -d "$TEMP_DIR" ]]; then
+    echo "Temp dir was not created: ${TEMP_DIR} does not exist or is not a folder."
+    exit 1
+fi
 
 if [[ "$DRYRUN" = true ]]; then
     SUMMARY="
-    mkdir -p $TEMP_DIR
+    cd $RESULT_DIR
 
-    zip $RESULT_DIR/contents.zip $RESULT_DIR/
+    zip -r ./contents.zip ./*
 
-    find \"$RESULT_DIR\" -mindepth 1 -not -path \"$TEMP_DIR*\" -exec rm -rf {} +
+    find \"./\" -mindepth 1 -not -path "$TEMP_DIR*" -exec rm -rf {} +
 
-    cp -r $TEMP_DIR/* $RESULT_DIR/ 2>/dev/null
-    rm -rf \"$TEMP_DIR\"
+    cp -r $TEMP_DIR/* ./ 2>/dev/null
 
     These files should be kept:"
     for file in "${KEEP_FILES[@]}"; do
@@ -121,28 +128,27 @@ if [[ "$DRYRUN" = true ]]; then
 
     printf "$SUMMARY"
 else
-    mkdir -p $TEMP_DIR
+    cd $RESULT_DIR
 
     # Clean-up to reduce the number of file/inodes (for RDM).
-    zip $RESULT_DIR/contents.zip $RESULT_DIR/
+    zip -r ./contents.zip ./*
 
     for file in "${KEEP_FILES[@]}"; do
-        if [[ -f "$RESULT_DIR/$file" ]]; then
+        if [[ -f "$file" ]]; then
             echo "Keeping: $file"
             # If the file comes from a folder the folder needs to be created first.
             mkdir -p "$TEMP_DIR/$(dirname "$file")"
-            cp "$RESULT_DIR/$file" "$TEMP_DIR/$file"
+            cp "$file" "$TEMP_DIR/$file"
         else
             echo "Warning: '$file' not found, skipping."
         fi
     done
 
-    echo "Deleting all contents in $RESULT_DIR"
-    find "$RESULT_DIR" -mindepth 1 -not -path "$TEMP_DIR*" -exec rm -rf {} +
+    echo "Deleting all contents in $PWD"
+    find "./" -mindepth 1 -not -path "$TEMP_DIR*" -exec rm -rf {} +
 
     echo "Restoring kept files from $TEMP_DIR"
-    cp -r $TEMP_DIR/* $RESULT_DIR/ 2>/dev/null
-    rm -rf "$TEMP_DIR"
+    cp -r $TEMP_DIR/* ./ 2>/dev/null
 
     echo "Cleanup complete."
 fi

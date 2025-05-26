@@ -1,7 +1,13 @@
 #!/bin/bash
 
-log () {
+_log () {
     echo "$(date '+%Y-%m-%d %H:%M:%S')   $*" | tee -a $LOG_FILE
+}
+log() {
+    _log ""
+    _log "===================================================================="
+    _log " $*"
+    _log "===================================================================="
 }
 
 # Parse arguments.
@@ -127,18 +133,18 @@ done
 # Set up logging file and a file for failed sessions (for re-running).
 # Make sure to include all the arguments and git info for reproducibility.
 LOG_FILE=$OUTPUT_DIR/run-recon-all-clinical_$(date "+%Y-%m-%d_%H-%M-%S").log
-log "$0 --data-dir $DATA_DIR --output-dir $OUTPUT_DIR --n-threads $NTHREADS --modules ${MODULES[*]} --excluded ${EXCLUDED[*]}"
+_log "$0 --data-dir $DATA_DIR --output-dir $OUTPUT_DIR --n-threads $NTHREADS --modules ${MODULES[*]} --excluded ${EXCLUDED[*]} --keep-files $KEEP_FILES_FILE"
 
 GIT_URL=$(git config --get remote.origin.url)
 if [[ -z "$GIT_URL" ]]; then
-    log "No git information"
+    _log "No git information"
 else
     COMMIT=$(git rev-parse HEAD)
     GIT_PATH=$(git ls-files --full-name "$0")
     if [[ -z "$GIT_PATH" ]]; then
         GIT_PATH="<$(basename $0) - not added to git yet>"
     fi
-    log "${GIT_URL%.git}/blob/$COMMIT/$GIT_PATH"
+    _log "${GIT_URL%.git}/blob/$COMMIT/$GIT_PATH"
 fi
 
 echo "" >> $LOG_FILE
@@ -175,9 +181,12 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
             ./suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --afni-version $AFNI_VERSION --dry-run
             ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE --dry-run
         else
-            ./freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION 2>> $LOG_FILE
-            ./suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --afni-version $AFNI_VERSION 2>> $LOG_FILE
-            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE 2>> $LOG_FILE
+            log "Freesurfer"
+            ./freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION >> $LOG_FILE 2>&1
+            log "SUMA"
+            ./suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --afni-version $AFNI_VERSION >> $LOG_FILE 2>&1
+            log "Cleanup"
+            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE >> $LOG_FILE 2>&1
         fi
 
         if [ $? -ne 0 ]; then

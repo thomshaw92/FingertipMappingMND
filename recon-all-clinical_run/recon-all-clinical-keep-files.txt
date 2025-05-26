@@ -1,6 +1,8 @@
 contents.zip
 mri/brain.nii.gz
 mri/native.nii.gz
+mri/brain.mgz
+mri/native.mgz
 SUMA/std.141.${SUB}_${SESSION}_lh.spec
 SUMA/std.141.${SUB}_${SESSION}_rh.spec
 SUMA/std.60.${SUB}_${SESSION}_lh.spec
