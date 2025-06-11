@@ -82,7 +82,7 @@ fi
 module load $MODULE
 
 # Where output will be stored.
-RESULT_DIR=$OUTPUT_DIR/output/$SUB/$SESSION
+RESULT_DIR=$OUTPUT_DIR/$SUB/$SESSION
 
 # Regions for CSF mask.
 CSF_REGIONS="\

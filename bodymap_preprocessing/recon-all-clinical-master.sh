@@ -74,7 +74,7 @@ done
 
 # Make sure to use the DATA_DIR value that was sepcified in the arguments.
 if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="${DATA_DIR}/mri/bids/derivatives/recon-all-clinical"
+    OUTPUT_DIR="${DATA_DIR}/recon-all-clinical"
 fi
 
 # Check that a file that contains files to keep exists. If no file was provided
@@ -177,16 +177,16 @@ for SUBJECT_DIR in "$DATA_DIR"/mri/bids/sub-*; do
         # Run processing but make sure that any errors are recorded in the
         # log file.
         if [ "$DRYRUN" = true ]; then
-            ./freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --dry-run
-            ./suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --afni-version $AFNI_VERSION --dry-run
-            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE --dry-run
+            ./run-recon-all-clinical.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION --dry-run
+            ./run-suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --afni-version $AFNI_VERSION --dry-run
+            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE --dry-run
         else
             log "Freesurfer"
-            ./freesurfer.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION >> $LOG_FILE 2>&1
+            ./run-recon-all-clinical.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --n-threads $NTHREADS --freesurfer-version $FREESURFER_VERSION >> $LOG_FILE 2>&1
             log "SUMA"
-            ./suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --afni-version $AFNI_VERSION >> $LOG_FILE 2>&1
+            ./run-suma.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --afni-version $AFNI_VERSION >> $LOG_FILE 2>&1
             log "Cleanup"
-            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE >> $LOG_FILE 2>&1
+            ./cleanup.sh --data-dir $DATA_DIR/mri/bids --output-dir $OUTPUT_DIR/output --sub $SUB --session $SESSION --keep-files $KEEP_FILES_FILE >> $LOG_FILE 2>&1
         fi
 
         if [ $? -ne 0 ]; then

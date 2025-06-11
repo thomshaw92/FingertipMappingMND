@@ -64,7 +64,7 @@ done
 
 # Make sure to use the DATA_DIR value that was sepcified in the arguments.
 if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="${DATA_DIR}/recon-all-clinical"
+    OUTPUT_DIR="${DATA_DIR}/recon-all-clinical/output"
 fi
 
 # Check that required arguments are present. If not terminate the script.
@@ -95,7 +95,7 @@ export SINGULARITYENV_FS_ALLOW_DEEP=$FS_ALLOW_DEEP
 
 # Where output will be stored. Freesurfer will create a folder in here with the
 # name of the subject as used in the recon-all-clinical command (2nd argument).
-SUBJECTS_DIR=$OUTPUT_DIR/output
+SUBJECTS_DIR=$OUTPUT_DIR
 mkdir -p $SUBJECTS_DIR
 export SINGULARITYENV_SUBJECTS_DIR=$SUBJECTS_DIR
 RESULT_DIR=$SUBJECTS_DIR/$SUB/$SESSION
@@ -108,7 +108,8 @@ if [ "$DRYRUN" = true ]; then
                           $SUBJECTS_DIR
     
     mri_convert $RESULT_DIR/mri/brain.mgz $RESULT_DIR/mri/brain.nii.gz
-    mri_convert $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/native.nii.gz
+    cp $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/orig.mgz
+    mri_convert $RESULT_DIR/mri/orig.mgz $RESULT_DIR/mri/orig.nii.gz
     "
     echo "$FREE_COMMAND"
 else
@@ -118,7 +119,8 @@ else
                           $SUBJECTS_DIR
 
     mri_convert $RESULT_DIR/mri/brain.mgz $RESULT_DIR/mri/brain.nii.gz
-    mri_convert $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/native.nii.gz
+    cp $RESULT_DIR/mri/native.mgz $RESULT_DIR/mri/orig.mgz
+    mri_convert $RESULT_DIR/mri/orig.mgz $RESULT_DIR/mri/orig.nii.gz
 fi
 
 
