@@ -2,7 +2,7 @@
 set -e
 
 # Parse arguments.
-PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,output-dir:,dry-run,keep-files: --name "$0" -- "$@")
+PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,dry-run,keep-files: --name "$0" -- "$@")
 # Terminate script if failed to parse arguments properly.
 if [[ $? -ne 0 ]]; then
     echo "Error parsing options" >&2
@@ -15,7 +15,6 @@ eval set -- "$PARSED"
 SUB=""
 SESSION=""
 DATA_DIR="."
-OUTPUT_DIR=""
 DRYRUN=false
 KEEP_FILES=(
         "contents.zip"
@@ -43,10 +42,6 @@ while true; do
             DATA_DIR="$2"
             shift 2
             ;;
-        --output-dir)
-            OUTPUT_DIR="$2"
-            shift 2
-            ;;
         --dry-run)
             DRYRUN=true
             shift
@@ -66,11 +61,6 @@ while true; do
     esac
 done
 
-# Make sure to use the DATA_DIR value that was specified in the arguments.
-if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="${DATA_DIR}/recon-all-clinical"
-fi
-
 # Check that required arguments are present. If not terminate the script.
 if [[ -z "$SUB" || -z "$SESSION" ]]; then
     echo "Error: Both --sub and --sess/--session are required"
@@ -81,13 +71,20 @@ fi
 if [[ -n "$KEEP_FILES_FILE" ]]; then
     if [[ -f "$KEEP_FILES_FILE" ]]; then
         KEEP_FILES=()
-        while IFS= read -r filename || [[ -n "$filename" ]]; do
-            # Skip empty lines or lines that are just whitespace
+        EXCLUDE_FILES=()
+        while IFS= read -r filename; do
+            # Skip empty lines or lines that are just whitespace.
             [[ -z "$filename" || "$filename" =~ ^[[:space:]]*$ ]] && continue
             
             # Make sure to evaluate any variables within filenames.
             expanded=$(SUB="$SUB" SESSION="$SESSION" envsubst <<< "$filename")
-            KEEP_FILES+=("$expanded")
+
+            # If it starts with '!' it indicates that it should be excluded.
+            if [[ "$expanded" == !* ]]; then
+                EXCLUDE_FILES+=("${expanded:1}")
+            else
+                KEEP_FILES+=("$expanded")
+            fi
         done < "$KEEP_FILES_FILE"
     else
         echo "Error: File '$KEEP_FILES_FILE' does not exist."
@@ -96,10 +93,10 @@ if [[ -n "$KEEP_FILES_FILE" ]]; then
 fi
 
 # Where output will be stored.
-RESULT_DIR=$OUTPUT_DIR/output/$SUB/$SESSION
+RESULT_DIR=$DATA_DIR/$SUB/$SESSION
 # Set up the temp dir and make sure it is deleted afterwards. Check that it was
 # actually created as well.
-TEMP_DIR=$(mktemp -d --tmpdir="$OUTPUT_DIR")
+TEMP_DIR=$(mktemp -d --tmpdir="$DATA_DIR")
 trap 'rm -rf "$TEMP_DIR"' EXIT
 if [[ ! -d "$TEMP_DIR" ]]; then
     echo "Temp dir was not created: ${TEMP_DIR} does not exist or is not a folder."
@@ -107,7 +104,8 @@ if [[ ! -d "$TEMP_DIR" ]]; then
 fi
 
 if [[ "$DRYRUN" = true ]]; then
-    SUMMARY="
+    summary="
+    shopt -s globstar nullglob
     cd $RESULT_DIR
 
     zip -r ./contents.zip ./*
@@ -117,31 +115,75 @@ if [[ "$DRYRUN" = true ]]; then
     cp -r $TEMP_DIR/* ./ 2>/dev/null
 
     These files should be kept:"
-    for file in "${KEEP_FILES[@]}"; do
-        if [[ -f "$RESULT_DIR/$file" ]]; then
-            SUMMARY+="\n    - $file"
-        else
-            SUMMARY+="\n    - $file (not found)"    
+    shopt -s globstar nullglob
+    for pattern in "${KEEP_FILES[@]}"; do
+        matches=($RESULT_DIR/$pattern)
+        if [[ ${#matches[@]} -eq 0 ]]; then
+            SUMMARY+="\n    - $pattern (not matched)"
+            continue
         fi
+        for file in "${matches[@]}"; do
+            preserve=true
+            for exclude_pattern in "${EXCLUDE_FILES[@]}"; do
+                # echo "${file#$RESULT_DIR/}"
+                if [[ "${file#$RESULT_DIR/}" == $exclude_pattern ]]; then
+                    preserve=false
+                    break
+                fi
+            done
+            if [[ $preserve = false ]]; then
+                summary+="\n    - ${file#$RESULT_DIR/} (excluded)"
+            elif [[ -e $file ]]; then
+                summary+="\n    - ${file#$RESULT_DIR/}"
+            else
+                summary+="\n    - ${file#$RESULT_DIR/} (not found)"
+            fi
+        done
     done
-    SUMMARY+="\n"
+    summary+="\n"
 
-    printf "$SUMMARY"
+    printf "$summary"
 else
+    # Needed for matching '*', 'folder*/**', etc.
+    shopt -s globstar nullglob
     cd $RESULT_DIR
 
     # Clean-up to reduce the number of file/inodes (for RDM).
     zip -r ./contents.zip ./*
 
-    for file in "${KEEP_FILES[@]}"; do
-        if [[ -f "$file" ]]; then
-            echo "Keeping: $file"
-            # If the file comes from a folder the folder needs to be created first.
-            mkdir -p "$TEMP_DIR/$(dirname "$file")"
-            cp "$file" "$TEMP_DIR/$file"
-        else
-            echo "Warning: '$file' not found, skipping."
+    for pattern in "${KEEP_FILES[@]}"; do
+        matches=($pattern)
+        if [[ ${#matches[@]} -eq 0 ]]; then
+            echo "WARNING: No matches for pattern '$pattern'"
+            continue
         fi
+
+        for file in "${matches[@]}"; do
+            # Check is this file also matches any of the exclusion patterns. If
+            # it does, do not preserve it.
+            preserve=true
+            for exclude_pattern in "${EXCLUDE_FILES[@]}"; do
+                if [[ $file == $exclude_pattern ]]; then
+                    preserve=false
+                    break
+                fi
+            done
+            if [[ $preserve = false ]]; then
+                continue
+            fi
+
+            # Full paths (without *) get matched by default even if the file
+            # does not exist. Therefore, checking for existence is needed.
+            if [[ -e $file ]]; then
+                echo "Keeping: $file"
+                # If the file comes from a folder the folder needs to be created
+                # first.
+                mkdir -p "$TEMP_DIR/$(dirname $file)"
+                cp -r "$file" "$TEMP_DIR/$file"
+            else
+                echo "WARNING: '$file' not found, skipping."
+            fi
+        done
     done
 
     echo "Deleting all contents in $PWD"
