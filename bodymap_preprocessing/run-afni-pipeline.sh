@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Parse arguments.
-PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,der-dir:,out-dir:,dry-run,n-threads:,afni-version: --name "$0" -- "$@")
+PARSED=$(getopt --options "" --long sub:,sess:,session:,data-dir:,der-dir:,output-dir:,dry-run,n-threads:,afni-version: --name "$0" -- "$@")
 # Terminate script if failed to parse arguments properly.
 if [[ $? -ne 0 ]]; then
     echo "Error parsing options" >&2
@@ -40,7 +40,7 @@ while true; do
             DER_DIR="$2"
             shift 2
             ;;
-		--out-dir)
+		--output-dir)
 			OUTPUT_DIR="$2"
 			shift 2
 			;;

@@ -2,7 +2,7 @@
 set -e
 
 # Parse arguments.
-PARSED=$(getopt --options "o" --long sub:,sess:,session:,repack-dir:,dry-run,keep-files:,overwrite --name "$0" -- "$@")
+PARSED=$(getopt --options "o" --long sub:,sess:,session:,data-dir:,dry-run,keep-files:,overwrite --name "$0" -- "$@")
 # Terminate script if failed to parse arguments properly.
 if [[ $? -ne 0 ]]; then
     echo "Error parsing options" >&2
