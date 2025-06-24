@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 # Parse arguments.
 PARSED=$(getopt --options "o" --long sub:,sess:,session:,data-dir:,dry-run,keep-files:,overwrite --name "$0" -- "$@")
@@ -111,25 +110,25 @@ if [[ "$DRYRUN" = true ]]; then
     unzip_output=\$(unzip -n contents.zip \"${KEEP_FILES[@]}\" -x \"${EXCLUDE_FILES[@]}\" 2>&1)
 
     These files should be removed:"
-    for file in $(find $RESULT_DIR -type f,d -printf '%P\n'); do
+    for file in $(find $RESULT_DIR -type f -printf '%P\n'); do
         # Check whether the file fits a pattern. If it also fits an exclusion
         # pattern then remove it.
         remove=true
         for pattern in "${KEEP_FILES[@]}"; do
-            if [[ "${file#$RESULT_DIR/}" == $pattern ]]; then
+            if [[ "$file" == $pattern ]]; then
                 remove=false
                 break
             fi
         done
         for pattern in "${EXCLUDE_FILES[@]}"; do
-            if [[ ${file#$RESULT_DIR/} == $pattern ]]; then
+            if [[ $file == $pattern ]]; then
                 remove=true
                 break
             fi
         done
 
         if [[ $remove = true ]]; then
-            summary+="\n    - ${file#$RESULT_DIR/}"
+            summary+="\n    - $file"
         fi
     done
     summary+="\n"
@@ -144,7 +143,7 @@ else
     unzip_output=$(sed -E 's/caution: excluded filename not matched:  (.+)/WARNING: Excluded file pattern "\1" not found in the archive./' <<< $unzip_output)
     echo "$unzip_output"
 
-    for file in $(find . -type f,d -printf '%P\n'); do
+    for file in $(find . -type f -printf '%P\n'); do
         # Check whether the file fits a pattern. If it also fits an exclusion
         # pattern then remove it.
         remove=true
@@ -162,8 +161,24 @@ else
         done
 
         if [[ $remove = true ]]; then
-            # Use '-r' in case 'file' is a folder.
-            rm -r $file
+            rm $file
+        fi
+    done
+    for folder in $(find . -type d -printf '%P\n'); do
+        # Mark any empty folders for deletion unless they match a pattern.
+        remove=false
+        if [ -z "$(ls -A $RESULT_DIR/$folder)" ]; then
+            remove=true
+        fi
+
+        for pattern in "${KEEP_FILES[@]}"; do
+            if [[ "${folder#$RESULT_DIR/}" == $pattern ]]; then
+                remove=false
+                break
+            fi
+        done
+        if [[ $remove = true ]]; then
+            rm -r $folder
         fi
     done
 fi
