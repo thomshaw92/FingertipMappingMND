@@ -81,6 +81,9 @@ if [[ -n "$KEEP_FILES_FILE" ]]; then
         KEEP_FILES=()
         EXCLUDE_FILES=()
         while IFS= read -r filename; do
+            # Remove trailing CR if present (Windows newline characters).
+            filename="${filename%$'\r'}"
+
             # Skip empty lines or lines that are just whitespace.
             [[ -z "$filename" || "$filename" =~ ^[[:space:]]*$ ]] && continue
             
