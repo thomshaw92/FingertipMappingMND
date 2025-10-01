@@ -106,17 +106,6 @@ done
 export SINGULARITYENV_FS_ALLOW_DEEP=1
 export APPTAINERENV_FS_ALLOW_DEEP=1
 mkdir -p $FS_DIR
-# Subject ID cannot contain session number - fmriprep will not recognise it as
-# pre-computed FS data if it is anything but the subject number (BIDS format).
-recon-all -all \
-          -i "$DATA_DIR/$SUB/$SESSION/anat/${SUB}_${SESSION}_acq-UNIDEN_run-1_T1w.nii.gz" \
-          -subjid "$SUB" \
-          -sd $FS_DIR
-
-if [ $? -ne 0 ]; then
-	echo "Freesurfer did not finish successfully for ${SUB}/${SESSION}. FMRIPREP cannot be run."
-	exit 1
-fi
 
 # This env variable overwrites whatever is passed as `fs-subjects-dir` below.
 # Setting it to an empty string then uses the argument value below.
@@ -148,7 +137,3 @@ fmriprep --skip_bids_validation \
          $DATA_DIR \
          $OUTPUT_DIR/$SUB/$SESSION \
          participant
-
-mv $FS_DIR/$SUB "$FS_DIR/${SUB}-tmp"
-mkdir -p $FS_DIR/$SUB
-mv "$FS_DIR/${SUB}-tmp" $FS_DIR/$SUB/$SESSION
