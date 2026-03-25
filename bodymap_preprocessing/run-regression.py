@@ -14,47 +14,111 @@ from nilearn.glm.first_level import make_first_level_design_matrix, FirstLevelMo
 from nilearn.glm import threshold_stats_img
 
 
+def get_motion_censor(confounds_df, fd_threshold=None, dvars_threshold=None):
+    """
+    Generate motion censoring columns in fmriprep format based on fd
+    and dvars thresholds.
+    
+    Adds `custom_motion_outlier_XX` columns to confounds_df where XX is
+    the counter for the number of outliers. For each censoring method,
+    it checks and sets the value to 1 for volumes exceeding the
+    thresholds.
+    
+    If fd_threshold is None, FD-based censoring is skipped.
+    If dvars_threshold is None, DVARS-based censoring is skipped.
+    
+    Returns a list of the motion outlier column names.
+    """
+    # Do not change the original.
+    confounds_df = confounds_df.copy()
+
+    # Compute censor mask: True for volumes to censor.
+    censor_conditions = []
+    if fd_threshold is not None:
+        censor_conditions.append(confounds_df['framewise_displacement'].fillna(0) > fd_threshold)
+    if dvars_threshold is not None:
+        censor_conditions.append(confounds_df['std_dvars'].fillna(0) > dvars_threshold)
+    
+    if censor_conditions:
+        # Concatenate all available censoring and find rows where any
+        # of the censoring is True.
+        censor_mask = pd.concat(censor_conditions, axis=1).any(axis=1)
+    else:
+        # No censoring if both thresholds are None.
+        return [], confounds_df
+    
+    motion_outlier_cols = []
+    counter = 1
+    for idx, is_outlier in enumerate(censor_mask):
+        if is_outlier:
+            # `motion_outlier_XX` columns might already exist
+            # (depending on fmriprep processig arguments). Make sure
+            # to not overwrite them or use them by accident.
+            col_name = f'custom_motion_outlier_{counter:02d}'
+            confounds_df[col_name] = 0
+            # Set 1 at the outlier volume
+            confounds_df.loc[idx, col_name] = 1
+            motion_outlier_cols.append(col_name)
+
+            counter += 1
+    
+    return motion_outlier_cols, confounds_df
+
+
 def save_stats(stats_data, filename):
     """
     Stack stats images along the 4th dimension. Save labels for each
-    volume on the 4th dimension into a sidecar JSON.
+    volume on the 4th dimension into a sidecar JSON and embedded in
+    NIfTI extension.
     """
     data_4d = np.stack([img.get_fdata() for img in stats_data.values()], axis=-1)
     # Use the affine from any of the images.
     affine = next(iter(stats_data.values())).affine
     stats_img = nib.Nifti1Image(data_4d, affine)
 
+    # `descrip` only allows max 80 characters so these will also be
+    # saved in the NIfTI extension and a sidecar JSON file.
     labels = list(stats_data.keys())
     stats_img.header['descrip'] = ' | '.join(labels)
-    # Make this work with AFNI as well.
-    stats_img.header.extensions = nib.nifti1.Nifti1Extensions([
-        nib.nifti1.Nifti1Extension(
-            code=4,
-            content=(
-                '<?xml version=\'1.0\' ?>\n'
-                '<AFNI_attributes\n'
-                'self_idcode="XYZ_kH4GTzsl_aMIjB6R6NDJ1w"\n'
-                'NIfTI_nums="129,153,129,1,43,16"\n'
-                'ni_form="ni_group" >\n'
-                    '<AFNI_atr\n'
-                    'ni_type="String"\n'
-                    'ni_dimen="1"\n'
-                    'atr_name="BRICK_LABS" >\n'
-                    f'{"~".join(labels)}\n'
-                    '</AFNI_atr>\n'
-                '</AFNI_attributes>\n'.encode()
-            )
+    
+    # AFNI extension for BRICK_LABS
+    afni_ext = nib.nifti1.Nifti1Extension(
+        code=4,
+        content=(
+            '<?xml version=\'1.0\' ?>\n'
+            '<AFNI_attributes\n'
+            'self_idcode="XYZ_kH4GTzsl_aMIjB6R6NDJ1w"\n'
+            'NIfTI_nums="129,153,129,1,43,16"\n'
+            'ni_form="ni_group" >\n'
+                '<AFNI_atr\n'
+                'ni_type="String"\n'
+                'ni_dimen="1"\n'
+                'atr_name="BRICK_LABS" >\n'
+                f'{"~".join(labels)}\n'
+                '</AFNI_atr>\n'
+            '</AFNI_attributes>\n'.encode()
         )
-    ])
+    )
+       
+    # Custom JSON extension for volume labels
+    json_metadata = json.dumps({"volume_labels": labels}, indent=2)
+    json_content = json_metadata.encode('utf-8')
+    json_ext = nib.nifti1.Nifti1Extension(
+        code=0,  # code=0 for unknown/custom
+        content=json_content
+    )
+    
+    stats_img.header.extensions = nib.nifti1.Nifti1Extensions([afni_ext, json_ext])
+    
     nib.save(stats_img, filename)
     
-    # Save labels as JSON sidecar.
-    # Accomodate both compressed and uncompressed NIFTIs.
+    # Save labels as JSON sidecar (for compatibility)
     json_filename = filename.replace('.nii.gz', '.json').replace('.nii', '.json')
     with open(json_filename, "w") as f:
         json.dump({"volume_labels": labels}, f, indent=2)
 
     return filename, json_filename
+
 
 def get_roi_mask(atlas='destrieux_2009', img=None, regions=None):
     """
@@ -122,7 +186,7 @@ def run_glm(config, sub, ses):
 
     # Nuisance regressors.
     confounds_df = pd.read_csv(confounds_path, delimiter='\t')
-    motion_censor = [c for c in confounds_df.columns if 'motion_outlier' in c]
+    motion_censor, confounds_df = get_motion_censor(confounds_df, fd_threshold=config['fd_threshold'], dvars_threshold=config['dvars_threshold'])
     motion = ['trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z']
     # CSF and WM CompCor principal components.
     pcs = [f'{tissue}_comp_cor_{ii:02d}' for ii in range(config['n_PCs']) for tissue in ['c', 'w']]
@@ -150,7 +214,8 @@ def run_glm(config, sub, ses):
     glm = FirstLevelModel(
         n_jobs=config['n_jobs'],
         mask_img=mask,
-        verbose=3
+        verbose=3,
+        smoothing_fwhm=config['smoothing_fwhm']
     )
     glm = glm.fit(img, design_matrices=design_mat)
     stats = defaultdict(dict)
@@ -174,7 +239,7 @@ def run_glm(config, sub, ses):
         # path.
         filename = config['results_path'].format(sub=sub, ses=ses, stat_type=stat_type)
         if not filename.startswith('/'):
-            filename = str(Path(config['data_path']) / res_path)
+            filename = str(Path(config['data_path']) / filename)
 
         # All contrasts will be packaged into one file. Separate files
         # will be made for different stat types (e.g., one file for

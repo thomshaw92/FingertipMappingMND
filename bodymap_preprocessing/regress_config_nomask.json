@@ -24,7 +24,7 @@
         "HandsvsOthers": "0.5*right_hand +0.5*left_hand -0.2*left_arm -0.2*left_foot -0.2*lips -0.2*right_arm -0.2*right_foot"
     },
     "TR": 0.9,
-    "n_PCs": 3,
+    "n_PCs": 5,
     "n_jobs": 8,
     "mask_atlas": null,
     "mask_regions": [
@@ -36,5 +36,8 @@
         "R G_precentral",
         "R S_central",
         "R S_precentral-sup-part"
-    ]
+    ],
+    "fd_threshold": 1,
+    "dvars_threshold": null,
+    "smoothing_fwhm": 3.0
 }
