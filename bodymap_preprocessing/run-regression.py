@@ -65,7 +65,7 @@ def get_motion_censor(confounds_df, fd_threshold=None, dvars_threshold=None):
     return motion_outlier_cols, confounds_df
 
 
-def save_stats(stats_data, filename):
+def save_stats(stats_data, filename, config):
     """
     Stack stats images along the 4th dimension. Save labels for each
     volume on the 4th dimension into a sidecar JSON and embedded in
@@ -100,8 +100,12 @@ def save_stats(stats_data, filename):
         )
     )
        
-    # Custom JSON extension for volume labels
-    json_metadata = json.dumps({"volume_labels": labels}, indent=2)
+    # Custom JSON extension for metadata
+    metadata = {
+        "volume_labels": labels,
+        "config": config
+    }
+    json_metadata = json.dumps(metadata, indent=2)
     json_content = json_metadata.encode('utf-8')
     json_ext = nib.nifti1.Nifti1Extension(
         code=0,  # code=0 for unknown/custom
@@ -112,10 +116,10 @@ def save_stats(stats_data, filename):
     
     nib.save(stats_img, filename)
     
-    # Save labels as JSON sidecar (for compatibility)
+    # Save metadata as JSON sidecar (for compatibility)
     json_filename = filename.replace('.nii.gz', '.json').replace('.nii', '.json')
     with open(json_filename, "w") as f:
-        json.dump({"volume_labels": labels}, f, indent=2)
+        json.dump(metadata, f, indent=2)
 
     return filename, json_filename
 
@@ -223,14 +227,14 @@ def run_glm(config, sub, ses):
         t_map = glm.compute_contrast(contr, output_type='stat')
         z_map = glm.compute_contrast(contr, output_type='z_score')
         p_map = glm.compute_contrast(contr, output_type='p_value')
-        (corrected_t, crit_t) = threshold_stats_img(t_map, mask_img=mask, height_control='fdr')
+        (corrected_z, crit_z) = threshold_stats_img(z_map, mask_img=mask, height_control='fdr')
         beta_map = glm.compute_contrast(contr, output_type='effect_size')
         beta_var_map = glm.compute_contrast(contr, output_type='effect_variance')
     
         stats['stat'][contr_label] = t_map
         stats['z_score'][contr_label] = z_map
         stats['p_value'][contr_label] = p_map
-        stats['stat_fdr_q001'][contr_label] = corrected_t
+        stats['z_score_fdr_q001'][contr_label] = corrected_z
         stats['betas'][contr_label] = beta_map
         stats['betas_var'][contr_label] = beta_var_map
     
@@ -244,7 +248,7 @@ def run_glm(config, sub, ses):
         # All contrasts will be packaged into one file. Separate files
         # will be made for different stat types (e.g., one file for
         # betas, one file for t-stats, etc.).
-        save_stats(stat_values, filename)
+        save_stats(stat_values, filename, config)
 
     return glm
 
