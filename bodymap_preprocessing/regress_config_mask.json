@@ -37,7 +37,7 @@
         "R S_central",
         "R S_precentral-sup-part"
     ],
-    "fd_threshold": 1,
+    "fd_threshold": null,
     "dvars_threshold": null,
     "smoothing_fwhm": 3.0
 }
