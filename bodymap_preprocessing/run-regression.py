@@ -13,6 +13,8 @@ import nibabel as nib
 from nilearn.glm.first_level import make_first_level_design_matrix, FirstLevelModel
 from nilearn.glm import threshold_stats_img
 
+# This will also add custom atlas fetchers to nilearn.datasets.
+import atlas
 
 def get_motion_censor(confounds_df, fd_threshold=None, dvars_threshold=None):
     """
