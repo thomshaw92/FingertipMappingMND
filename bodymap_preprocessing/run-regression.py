@@ -214,6 +214,13 @@ def run_glm(config, sub, ses):
     
     if config['mask_atlas']:
         mask = get_roi_mask(atlas=config['mask_atlas'], regions=config['mask_regions'], img=img)
+    elif 'epi_brainmask_path' in config:
+        mask_path = Path(config['data_path']) / Path(config['epi_brainmask_path'].format(sub=sub, ses=ses))
+        mask = nilearn.image.load_img(mask_path)
+        # Not changing the header like this BREAKS the GLM. You have
+        # been warned.
+        mask.header.set_data_dtype(np.float32)
+
     else:
         mask = None
     

@@ -1,6 +1,7 @@
 {
     "data_path": "${TMP_DATA_DIR}",
     "epi_path": "derivatives/fmriprep/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz",
+    "epi_brainmask_path": "derivatives/fmriprep/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz",
     "events_path": "{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_events.tsv",
     "confounds_path": "derivatives/fmriprep/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_desc-confounds_timeseries.tsv",
     "results_path": "${TMP_OUTPUT_DIR}/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-{stat_type}-unmasked_stats.nii.gz",
