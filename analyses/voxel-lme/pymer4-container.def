@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Author "Michal Toth"
+    Version 1.0
+    Description "Singularity container pymer4"
+
+%environment
+    export PATH=/opt/conda/bin:$PATH
+    export OMP_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+
+%post
+    # echo "Updating packages..."
+    # apt-get update && apt-get install -y \
+    #     r-base r-base-dev libcurl4-openssl-dev libxml2-dev libssl-dev \
+    #     && rm -rf /var/lib/apt/lists/*
+
+    echo "Creating LME environment..."
+    mamba create -y -p /opt/conda/envs/lme-env python=3.12
+
+    echo "Activating environment..."
+    source /opt/conda/etc/profile.d/conda.sh
+    conda activate /opt/conda/envs/lme-env
+
+    echo "Installing Python packages..."
+    mamba install -y -c ejolly -c conda-forge pymer4 \
+        ipykernel dill nibabel scipy statsmodels tqdm openpyxl matplotlib polars joblib
+
+%runscript
+    #!/bin/bash
+    # initialize conda
+    source /opt/conda/etc/profile.d/conda.sh
+
+    # activate the environment
+    conda activate /opt/conda/envs/lme-env
+    exec python "$@"
