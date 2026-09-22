@@ -982,6 +982,9 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1):
     # Use argmax only on the valid data (inside ROI and above threshold
     # ). Make sure to get the max index from the original data.
     valid_indices = np.where(valid)[0]
+    valid_data = data[valid_indices]
+    if np.nansum(valid_data) == 0:
+        return 0
     max_valid_idx = np.argmax(data[valid_indices])
     
     return valid_indices[max_valid_idx] + 1  # +1 to reserve 0 for outside ROI
