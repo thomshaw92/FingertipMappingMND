@@ -990,7 +990,7 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1):
     return valid_indices[max_valid_idx] + 1  # +1 to reserve 0 for outside ROI
 
 
-def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, suffix='segmentation', load_errors='raise'):
+def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, suffix='segmentation', load_errors='raise', color_palette=None):
     """
     Save an image as a segmentation file.
 
@@ -1028,6 +1028,7 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
 
     if template is None:
         template = nilearn.datasets.load_mni152_template(resolution=1)
+        template.name = template.get_filename()
 
     if template:
         out_img = nilearn.image.resample_to_img(
@@ -1047,7 +1048,7 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
     meta = _create_meta(
         meta,
         segmentation={
-            'template': template.get_filename() if template else None,
+            'template': template.name if template else None,
             'labels': meta_labels
         },
         source_meta=img_meta
@@ -1064,7 +1065,7 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
 
     if labels is not None:
         labels_output_path = _get_output_path(output_path, suffix='labels', extension='.txt')
-        _save_itksnap_label_description(labels, output_path=labels_output_path)
+        _save_itksnap_label_description(labels, output_path=labels_output_path, color_palette=color_palette)
 
     return out_img, meta
 
@@ -1109,7 +1110,10 @@ def _save_itksnap_label_description(labels, output_path=None, color_palette=None
     ]
 
     for orig_idx, (label, color) in sorted(labels.items()):
-        r, g, b = _hex_to_rgb(color)
+        if isinstance(color, str):
+            r, g, b = _hex_to_rgb(color)
+        else:
+            r, g, b, _ = (int(c * 255) for c in color)
         label_lines.append(f"{orig_idx}  {r}  {g}  {b}  1.0  1  1  \"{label}\"")
 
     if output_path:
@@ -1241,7 +1245,7 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     return surface_image, meta
 
 
-def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, **kwargs):
+def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, **kwargs):
     """
     Create a static surface stat-map plot.
 
@@ -1283,6 +1287,23 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         fsaverage_data = None
 
     surface_image, surf_meta = io_utils.load_surface(surf_file)
+    if 'vmin' not in kwargs or 'vmax' not in kwargs:
+        # Set vmin/vmax based on the data range across both hemispheres.
+        data = np.concatenate([surface_image.data.parts['left'], surface_image.data.parts['right']])
+        kwargs['vmin'] = kwargs.get('vmin', np.nanmin(data))
+        kwargs['vmax'] = kwargs.get('vmax', np.nanmax(data))
+
+    if isinstance(cmap, list):
+        if cmap_bg_first:
+            # Remove the first color (background) from the colormap so
+            # that it is not used in the plot or the legend.
+            cmap = cmap[1:]
+        cmap = matplotlib.colors.ListedColormap(cmap)
+    if cmap is not None:
+        # The default value for `cmap` in `plot_surf_stat_map` is a
+        # constant var so cannot pass `cmap=None` directly.
+        kwargs['cmap'] = cmap
+
     contrast = surf_meta.get('projection', {}).get('contrast', 'unknown_contrast')
     display = nilearn.plotting.plot_surf_stat_map(
         surf_mesh=mesh,
@@ -1291,28 +1312,37 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         **kwargs
     )
 
+    vmin = kwargs['vmin']
+    vmax = kwargs['vmax']
+    if colorbar_labels is None:
+        colorbar_labels = [str(i) for i in range(vmin, vmax + 1)]
     if 'engine' in kwargs and kwargs['engine'] == 'plotly':
-        # TODO: Handle labels being None.
         n = len(colorbar_labels)
 
-        # TODO: cmin and cmax should be set based on vmin/vmax (see 
-        # nilearn.plotting._utils.get_colorbar_and_data_ranges).
         display.figure.update_traces(
-            cmin=0.5, cmax=8.5,
+            cmin=vmin-0.5, cmax=vmax+0.5,  # to make sure that the colors extend past labels
             colorbar=dict(
-                tickvals=np.arange(1, n + 1),   # [1, 2, 3, ... 8]
+                tickvals=np.arange(vmin, n + 1),   # [1, 2, 3, ... 8]
                 ticktext=colorbar_labels,
                 tickfont=dict(size=35),
                 tickmode='array',
             )
         )
     else:
-        # TODO: Handle labels being None.
         n = len(colorbar_labels)
+
         cbar_ax = display.axes[-1]
-        cbar_ax.set_yticks(np.arange(1, n + 1))
+        cbar = cbar_ax._colorbar
+
+        cbar.vmin = vmin - 0.5
+        cbar.vmax = vmax + 0.5
+        cbar.boundaries = np.arange(vmin - 0.5, vmax + 1.5)
+        cbar._draw_all()  # needed to update the colorbar
+
+        cbar_ax.set_ylim(vmin - 0.5, vmax + 0.5)
+        cbar_ax.set_yticks(np.arange(vmin, n + 1))
         cbar_ax.set_yticklabels(colorbar_labels)
-        cbar_ax.tick_params(labelsize=28)
+        cbar_ax.tick_params(labelsize=18)
 
     meta = _create_meta(meta, plotting={
         'standard_surface': standard_surface,
@@ -1324,14 +1354,14 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
     if output_path is None:
         # Make the `plots` folder outside of the `func` folder.
         plot_folder = Path(surf_file).parent.parent / 'plots'
-        # output_path = plot_folder / f'{standard_surface}_{surface_type}_{contrast}.png'
+        output_path = plot_folder / f'{standard_surface}_{surface_type}_{contrast}.png'
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
         io_utils.save_figure(display, output_path, meta=meta)
 
-    # if isinstance(display, matplotlib.figure.Figure):
-    #     plt.close(display)
+    if isinstance(display, matplotlib.figure.Figure):
+        plt.close(display)
 
     return display, meta
 
@@ -1351,7 +1381,7 @@ def make_html2(surf_file, meta=None, output_path=None, standard_surface='fsavera
         # Make the `htmls` folder outside of the `func` folder.
         html_folder = Path(surf_file).parent.parent / 'htmls'
         contrast = meta.get('plotting', {}).get('contrast', 'unknown_contrast')
-        # output_path = html_folder / f'{standard_surface}_{surface_type}_{contrast}.html'
+        output_path = html_folder / f'{standard_surface}_{surface_type}_{contrast}.html'
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
@@ -1450,7 +1480,7 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
 
 
 def _transform_surface(coords, xfm_t1w_mni, xfm_fsnative_t1w=None, use_temp=True):
-    tmpdir = os.getenv('TMPDIR', '/scratch/user/uqmtoth/code/bodymaps/tmp')
+    tmpdir = os.getenv('TMPDIR', '/tmp')
     ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
     with ctx as tmpdir:
         df = pd.DataFrame(coords, columns=['x', 'y', 'z'])

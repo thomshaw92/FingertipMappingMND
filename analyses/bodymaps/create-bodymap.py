@@ -102,11 +102,14 @@ def create_bodymap(sub, ses, config, base_dir):
     labels = {contr_idx+1: contr for contr_idx, contr in enumerate(contrasts)}
     labels[0] = 'Outside ROI'
     labels[no_result_idx] = 'Rest'
+    seg_cmap = {lab: cmap[idx] for idx, lab in labels.items()}
     seg_img, seg_meta = analysis.save_as_segmentation(
         img=wta_img,
         meta={'source_meta': wta_meta},
         labels=labels,
-        output_path=base_dir / segment_tpl.format(sub=sub, ses=ses)
+        output_path=base_dir / segment_tpl.format(sub=sub, ses=ses),
+        template=base_dir / t1_tpl.format(sub=sub, ses=ses),
+        color_palette=seg_cmap
     )
 
     logging.info('Transforming surfaces to MNI')
@@ -139,19 +142,19 @@ def create_bodymap(sub, ses, config, base_dir):
     )
 
     logging.info('Saving as PNG')
+    plot_labels = contrasts + ['Rest']
     plot, meta = analysis.make_plot(
         projected_file,
         meta=proj_meta,
         output_path=base_dir / plot_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
-        vmin=0,
-        vmax=8,
         symmetric_cbar=False,
         colorbar=True,
         mesh=pial_polymesh,
-        colorbar_labels=contrasts,
+        colorbar_labels=plot_labels,
         view='dorsal',
+        cmap_bg_first=True
     )
 
     logging.info('Saving as HTML')
@@ -161,12 +164,11 @@ def create_bodymap(sub, ses, config, base_dir):
         output_path=base_dir / html_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
-        vmin=0,
-        vmax=8,
         symmetric_cbar=False,
         colorbar=True,
         mesh=pial_polymesh,
-        colorbar_labels=contrasts
+        colorbar_labels=plot_labels,
+        cmap_bg_first=True
     )
 
     logging.info('Copying files')
@@ -238,17 +240,17 @@ config = dict(
 
     no_result_idx=8,
 
-    cmap = ListedColormap([
-        "#E41A1C",  # red
-        "#377EB8",  # blue
-        "#4DAF4A",  # green
-        "#984EA3",  # purple
-        "#FF7F00",  # orange
-        "#FFFF33",  # yellow
-        "#A65628",  # brown
-        "#F781BF",  # pink
-        "#17BECF",  # cyan
-    ]),
+    cmap = [
+        "#000000",  # Background (must be included even if it's not shown)
+        '#543005',  # LA
+        '#8c510a',  # LF
+        '#dfc27d',  # LH
+        '#b2182b',  # LP
+        '#003c30',  # RA
+        '#01665e',  # RF
+        '#80cdc1',  # RH
+        '#f5f5f5'   # Rest
+    ],
 
     alpha = 0.001
 )

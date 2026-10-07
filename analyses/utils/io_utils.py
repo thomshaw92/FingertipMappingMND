@@ -156,7 +156,7 @@ def save_figure(fig, fig_path, meta=None, save_empty_sidecar=False, interactive=
     if interactive:
         fig.figure.write_html(fig_path)
     else:
-        fig.savefig(fig_path)
+        fig.savefig(fig_path, dpi=200, bbox_inches='tight')
 
     if save_empty_sidecar or meta:
         json_filename = _get_sidecar_json(fig_path)
