@@ -8,7 +8,10 @@ from pathlib import Path
 from contextlib import contextmanager
 import logging
 import nibabel as nib
-import nilearn
+import nilearn.surface
+import gzip
+import shutil
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -176,17 +179,33 @@ def save_view(view, view_path, meta=None, save_empty_sidecar=False):
             json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
 
 
+def _get_surface_paths(path, hemi=None, data_type='mesh'):
+    path = Path(path)
+    full_ext = "".join(path.suffixes)
+
+    hemi_suffix = ''
+    if hemi is not None:
+        hemi_suffix = f'_hemi-{hemi}'
+
+    data_suffix = ''
+    if data_type is not None:
+        data_suffix = f'_{data_type}'
+
+    surf_path = path.parent / f'{path.stem}{data_suffix}{hemi_suffix}{full_ext}'
+
+    return surf_path
+
+
 def save_surface(surf_img, path, meta=None):
     if meta is None:
         meta = {}
 
     path = Path(path)
-    full_ext = "".join(path.suffixes)
     
-    mesh_path = path.parent / f'{path.stem}_mesh{full_ext}'
+    mesh_path = _get_surface_paths(path, hemi=None, data_type='mesh')
     surf_img.mesh.to_filename(mesh_path)
 
-    data_path = path.parent / f'{path.stem}_data{full_ext}'
+    data_path = _get_surface_paths(path, hemi=None, data_type='data')
     surf_img.data.to_filename(data_path)
 
     json_filename = _get_sidecar_json(path)
@@ -196,16 +215,15 @@ def save_surface(surf_img, path, meta=None):
 
 def load_surface(path):
     path = Path(path)
-    full_ext = "".join(path.suffixes)
 
     mesh = {
-        'left': path.parent / f'{path.stem}_mesh_hemi-L{full_ext}',
-        'right': path.parent / f'{path.stem}_mesh_hemi-R{full_ext}'
+        'left': _get_surface_paths(path, hemi='L', data_type='mesh'),
+        'right': _get_surface_paths(path, hemi='R', data_type='mesh')
     }
 
     data = {
-        'left': path.parent / f'{path.stem}_data_hemi-L{full_ext}',
-        'right': path.parent / f'{path.stem}_data_hemi-R{full_ext}'
+        'left': _get_surface_paths(path, hemi='L', data_type='data'),
+        'right': _get_surface_paths(path, hemi='R', data_type='data')
     }
 
     surf_image = nilearn.surface.SurfaceImage(mesh=mesh, data=data)
@@ -219,6 +237,22 @@ def load_surface(path):
             meta = json.load(json_sidecar)
 
     return surf_image, meta
+
+
+def save_gifti(data, path, meta=None):
+    if meta is None:
+        meta = {}
+
+    darray = nib.gifti.GiftiDataArray(
+        data.astype(np.float32),
+        intent=nib.nifti1.intent_codes['NIFTI_INTENT_NONE'],
+    )
+
+    nib.gifti.GiftiImage(darrays=[darray]).to_filename(path)
+
+    json_filename = _get_sidecar_json(path)
+    with open(json_filename, 'w') as json_sidecar:
+        json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
 
 
 def convert_to_sec(t):
@@ -249,3 +283,10 @@ def job_info(job_id, out_format='JobID,JobName,State'):
         job_data[f'{col_name}_min'] = job_data[col_name].apply(convert_to_min)
 
     return job_data
+
+
+def unpack_gifti(sphere_path, output_path='/tmp/fsaverage_sphere.surf.gii'):
+    with gzip.open(sphere_path, 'rb') as f_in:
+        with open(output_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    return output_path

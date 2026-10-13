@@ -114,10 +114,15 @@ def create_bodymap(sub, ses, config, base_dir):
 
     logging.info('Transforming surfaces to MNI')
     xfm_t1w_mni = base_dir / xfm_t1w_mni_tpl.format(sub=sub, ses=ses)
-    for surf in ('pial', 'white'):
+    for surf in ('pial', 'white', 'inflated'):
         surf_files = {}
         for hemi in ('left', 'right'):
-            tpl = pial_tpl if surf == 'pial' else white_tpl
+            if surf == 'pial':
+                tpl = pial_tpl
+            elif surf == 'white':
+                tpl = white_tpl
+            elif surf == 'inflated':
+                tpl = inflated_tpl
             s_file = base_dir / tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
             surf_files[f'{hemi}_surf'] = s_file
 
@@ -125,9 +130,9 @@ def create_bodymap(sub, ses, config, base_dir):
         polymesh, _ = analysis.transform_surface_to_mni(xfm_t1w_mni=xfm_t1w_mni, output_path=output_path, **surf_files)
         if surf == 'pial':
             pial_polymesh = polymesh
-        else:
+        elif surf == 'white':
             white_polymesh = polymesh
-    
+
     logging.info('Projecting image')
     projected_file = base_dir / projected_tpl.format(sub=sub, ses=ses)
     proj_img, proj_meta = analysis.project_image(
@@ -138,15 +143,33 @@ def create_bodymap(sub, ses, config, base_dir):
         kind='depth',
         n_samples=20,
         mesh=pial_polymesh,
-        inner_mesh=white_polymesh
+        inner_mesh=white_polymesh,
+        standard_surface='MNI152NLin2009cAsym',
     )
 
-    logging.info('Saving as PNG')
+    logging.info('Transforming projected image to fsaverage')
+    resampled_data = {}
+    for hemi in ['left', 'right']:
+        # data_file = io_utils._get_surface_paths(projected_file, hemi='L' if hemi == 'left' else 'R', data_type='data')
+        sphere_file = base_dir / sphere_reg_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
+        output_path = base_dir / fsavg_surf_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
+        fsavg_surf, surf_meta = analysis.transform_surface_to_fsaverage(
+            projected_file,
+            sphere_file,
+            hemi=hemi,
+            output_path=output_path,
+            standard_surface='fsaverage',
+            meta=proj_meta
+        )
+
+        resampled_data[hemi] = fsavg_surf
+
+    logging.info('Saving MNI surf as PNG')
     plot_labels = contrasts + ['Rest']
     plot, meta = analysis.make_plot(
         projected_file,
         meta=proj_meta,
-        output_path=base_dir / plot_tpl.format(sub=sub, ses=ses),
+        output_path=base_dir / plot_mni_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
         symmetric_cbar=False,
@@ -154,21 +177,45 @@ def create_bodymap(sub, ses, config, base_dir):
         mesh=pial_polymesh,
         colorbar_labels=plot_labels,
         view='dorsal',
-        cmap_bg_first=True
+        cmap_bg_first=True,
+        vmin=1,
+        vmax=len(plot_labels)
     )
 
-    logging.info('Saving as HTML')
+    logging.info('Saving fsaverage surf as PNG')
+    plot_labels = contrasts + ['Rest']
+    plot, meta = analysis.make_plot(
+        resampled_data,
+        meta=surf_meta,
+        output_path=base_dir / plot_fsavg_tpl.format(sub=sub, ses=ses),
+        hemi='both',
+        cmap=cmap,
+        symmetric_cbar=False,
+        colorbar=True,
+        colorbar_labels=plot_labels,
+        view='dorsal',
+        cmap_bg_first=True,
+        standard_surface='fsaverage',
+        mesh='pial',
+        vmin=1,
+        vmax=len(plot_labels)
+    )
+
+    logging.info('Saving fsaverage surf as HTML')
     display, meta = analysis.make_html2(
-        projected_file,
-        meta=proj_meta,
+        resampled_data,
+        meta=surf_meta,
         output_path=base_dir / html_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
         symmetric_cbar=False,
         colorbar=True,
-        mesh=pial_polymesh,
+        standard_surface='fsaverage',
+        mesh='pial',
         colorbar_labels=plot_labels,
-        cmap_bg_first=True
+        cmap_bg_first=True,
+        vmin=1,
+        vmax=len(plot_labels)
     )
 
     logging.info('Copying files')
@@ -203,13 +250,17 @@ config = dict(
     xfm_t1w_mni_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_from-MNI152NLin2009cAsym_to-T1w_mode-image_xfm.h5',
     pial_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_pial.surf.gii',
     white_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_white.surf.gii',
+    inflated_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_inflated.surf.gii',
     mni_surf_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}.gii',
     left_surf_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}_hemi-L.gii',
     right_surf_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}_hemi-R.gii',
+    sphere_reg_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_space-fsaverage_desc-reg_sphere.surf.gii',
 
-    projected_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta.gii',
-    plot_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-projected_plot.png',
-    html_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-projected_plot.html',
+    projected_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-surf_wta.gii',
+    fsavg_surf_tpl = 'wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-surf_wta_hemi-{hemi}.func.gii',
+    plot_mni_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-projected_plot.png',
+    plot_fsavg_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_plot.png',
+    html_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_interactive.html',
     resampled_t1_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_resampled_T1w.nii.gz',
 
     contrasts=[

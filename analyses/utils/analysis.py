@@ -146,6 +146,8 @@ def _create_meta(meta, **kwargs):
     if meta is None:
         meta = {}
 
+    meta = copy.deepcopy(meta)
+
     for k, v in kwargs.items():
         if isinstance(v, dict):
             meta[k] = _create_meta(meta.get(k), **v)
@@ -1286,7 +1288,12 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
     else:
         fsaverage_data = None
 
-    surface_image, surf_meta = io_utils.load_surface(surf_file)
+    if isinstance(surf_file, (Path, str)):
+        surface_image, surf_meta = io_utils.load_surface(surf_file)
+    else:
+        surface_image = SurfaceImage(mesh=mesh, data=surf_file)
+        surf_meta = {}
+
     if 'vmin' not in kwargs or 'vmax' not in kwargs:
         # Set vmin/vmax based on the data range across both hemispheres.
         data = np.concatenate([surface_image.data.parts['left'], surface_image.data.parts['right']])
@@ -1342,7 +1349,7 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         cbar_ax.set_ylim(vmin - 0.5, vmax + 0.5)
         cbar_ax.set_yticks(np.arange(vmin, n + 1))
         cbar_ax.set_yticklabels(colorbar_labels)
-        cbar_ax.tick_params(labelsize=18)
+        cbar_ax.tick_params(labelsize=16)
 
     meta = _create_meta(meta, plotting={
         'standard_surface': standard_surface,
@@ -1534,7 +1541,7 @@ def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1
         )
         
         # Build InMemoryMesh objects
-        surf_mesh[hemi] = nilearn.surface.surface.InMemoryMesh(surf_mni,  faces)
+        surf_mesh[hemi] = nilearn.surface.surface.InMemoryMesh(surf_mni, faces)
 
     surf_polymesh  = nilearn.surface.surface.PolyMesh(**surf_mesh)
 
@@ -1559,3 +1566,83 @@ def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1
             json.dump(meta, f, indent=2, cls=io_utils.PathEncoder)
     
     return surf_polymesh, meta
+
+
+def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
+    """
+    Resample a surface texture to fsaverage using wb_command.
+    fsavg_spheres: dict with 'L' and 'R' paths to fsaverage sphere GIFTI files
+    (converted from FreeSurfer binary using mris_convert).
+    """
+    # fs_hemi = 'L' if hemi == 'left' else 'R'
+    # anat_dir = Path(fmriprep_dir) / sub / ses / 'anat'
+
+    # # Save texture as GIFTI
+    # texture_path = f'/tmp/{sub}_{ses}_{fs_hemi}_texture.func.gii'
+    # darray = nib.gifti.GiftiDataArray(
+    #     texture.astype(np.float32),
+    #     intent=nib.nifti1.intent_codes['NIFTI_INTENT_NONE'],
+    # )
+    # nib.gifti.GiftiImage(darrays=[darray]).to_filename(texture_path)
+
+    # subject_sphere = str(anat_dir / f'{sub}_{ses}_hemi-{fs_hemi}_space-fsaverage_desc-reg_sphere.surf.gii')
+
+    tmpdir = os.getenv('TMPDIR', '/tmp')
+    ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
+    with ctx as tmpdir:
+
+        # fsavg_out_path = f'{tmpdir}/fsaverage_sphere_reg.surf.gii'
+        # cmd = f'ml load structural_imaging/freesurfer/7.4.1 && mris_convert {fsavg_sphere} {fsavg_out_path}'
+        # subprocess.run(['/bin/bash', '-lc', cmd], check=True)
+        # logger.info(f'Converted {fsavg_sphere} sphere to {fsavg_out_path}')
+
+        fsavg_sphere = io_utils.unpack_gifti(fsavg_sphere, output_path=Path(tmpdir) / Path(fsavg_sphere).name.replace('.gz', ''))
+
+        out_path = Path(tmpdir) / 'resampled.func.gii'
+        wb_cmd = [
+            'wb_command', '-metric-resample',
+            str(data_path),
+            str(sphere_path),
+            str(fsavg_sphere),
+            'BARYCENTRIC',
+            str(out_path),
+            '-largest',
+        ]
+
+        cmd = 'ml load   connectomeworkbench/1.5.0 && ' + shlex.join(wb_cmd)
+        subprocess.run(['/bin/bash', '-lc', cmd], check=True)
+
+        # Only need vertex data not their faces/mesh info.
+        coords = nib.load(str(out_path)).darrays[0].data
+
+    return coords
+
+
+def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surface='fsaverage6', output_path=None, meta=None, verbose=True):
+    with io_utils.optional_silent_print(verbose):
+        fsaverage_surf = nilearn.datasets.fetch_surf_fsaverage(mesh=standard_surface)
+        fsavg_sphere = fsaverage_surf[f'sphere_{hemi}']
+    
+    surf = io_utils._get_surface_paths(surf_file, hemi='L' if hemi == 'left' else 'R', data_type='data')
+
+    surf_fsavg = _resample_to_fsaverage(
+        surf,
+        surf_sphere,
+        fsavg_sphere
+    )
+
+    meta = _create_meta(
+        meta,
+        fsaverage_transform={
+            'standard_surface': standard_surface,
+            'hemi': hemi,
+            'source': surf,
+            'sphere': surf_sphere,
+            'fsavg_sphere': fsavg_sphere
+        }
+    )
+
+    if output_path:
+        io_utils.save_gifti(surf_fsavg, path=output_path, meta=meta)
+
+    return surf_fsavg, meta
