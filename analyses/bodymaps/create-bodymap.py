@@ -34,6 +34,7 @@ def create_bodymap(sub, ses, config, base_dir):
     
     file = base_dir / z_score.format(sub=sub, ses=ses)
     atlas_file = base_dir / atlas_tmpl.format(sub=sub, ses=ses)
+    mask_file = base_dir / epi_mask.format(sub=sub, ses=ses)
 
     logging.info('Correcting images')
     p_val_file = base_dir / p_val.format(sub=sub, ses=ses)
@@ -41,7 +42,8 @@ def create_bodymap(sub, ses, config, base_dir):
     analysis.correct_images(
         p_val_file,
         alpha=alpha,
-        output_path=corr_p_val_file
+        output_path=corr_p_val_file,
+        mask_img=mask_file
     )
 
     logging.info('Thresholding image')
@@ -52,7 +54,8 @@ def create_bodymap(sub, ses, config, base_dir):
         alpha=alpha,
         output_path=False,
         load_errors='raise',
-        thresh_val=999
+        thresh_val=999,
+        mask_img=mask_file
     )
 
     logging.info('Extracting ROIs')
@@ -95,7 +98,9 @@ def create_bodymap(sub, ses, config, base_dir):
         outside_val=-999.0,
         below_thresh_val=999,
         no_result_idx=no_result_idx,
-        output_path=wta_file
+        output_path=wta_file,
+        mask_img=mask_file,
+        only_positive=True
     )
 
     logging.info('Saving as segmentation')
@@ -179,7 +184,9 @@ def create_bodymap(sub, ses, config, base_dir):
         view='dorsal',
         cmap_bg_first=True,
         vmin=1,
-        vmax=len(plot_labels)
+        vmax=len(plot_labels),
+        engine='matplotlib',
+        avg_method='median'
     )
 
     logging.info('Saving fsaverage surf as PNG')
@@ -198,7 +205,9 @@ def create_bodymap(sub, ses, config, base_dir):
         standard_surface='fsaverage',
         mesh='pial',
         vmin=1,
-        vmax=len(plot_labels)
+        vmax=len(plot_labels),
+        engine='matplotlib',
+        avg_method='median'
     )
 
     logging.info('Saving fsaverage surf as HTML')
@@ -242,6 +251,7 @@ config = dict(
     corr_p_val='nilearn/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-p_value_corrected-unmasked_stats.nii.gz',
     atlas_tmpl='atlases_mni/output/{sub}/{ses}/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-aparcDKTaseg_dseg.nii.gz',
     t1_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_T1w.nii.gz',
+    epi_mask = 'fmriprep/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz',
 
     roid_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-hemi_specific_rois.nii.gz',
     wta_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta.nii.gz',

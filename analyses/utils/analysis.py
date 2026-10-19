@@ -2,7 +2,6 @@ import contextlib
 import copy
 import json
 import os
-import pdb
 import warnings
 import tempfile
 import matplotlib
@@ -15,7 +14,6 @@ from nilearn.surface import SurfaceImage
 from statsmodels.stats.multitest import multipletests
 import logging
 from pathlib import Path
-import pdb
 import pandas as pd
 import subprocess
 import matplotlib.pyplot as plt
@@ -156,7 +154,52 @@ def _create_meta(meta, **kwargs):
     return meta
 
 
-def _correct_single_img(img, alpha=0.05, method='fdr_bh'):
+def _prepare_mask(img, mask_img=None, load_errors='raise'):
+    """
+    Prepare a binary mask for a 3D or 4D image.
+
+    If ``mask_img`` is provided, it is checked for shape and affine
+    compatibility with ``img``. If they do not match, the mask is
+    resampled to the image space using nearest-neighbor interpolation.
+    If no mask is provided, a default mask of all ones is created.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image
+        Image for which to prepare the mask.
+    mask_img : nib.Nifti1Image or path-like, optional
+        Optional binary mask image. If provided, it will be checked and
+        potentially resampled to match ``img``.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors when loading ``mask_img``. Default
+        is ``'raise'``.
+
+    Returns
+    -------
+    mask_data : np.ndarray
+        Boolean array of shape (x, y, z) representing the binary mask.
+    """
+    if mask_img is not None:
+        mask_img, _ = _check_input_img(mask_img, load_errors=load_errors)
+        # Check if the mask needs to be resampled to match the image.
+        shapes_match = img.shape[:3] == mask_img.shape[:3]
+        # Check affine (voxel size + orientation + origin).
+        affines_match = np.allclose(img.affine, mask_img.affine, atol=1e-3)
+
+        mask_filename = getattr(mask_img, 'get_filename', lambda: 'unknown')()
+        if not shapes_match or not affines_match:
+            mask_img = nilearn.image.resample_to_img(mask_img, img, interpolation='nearest')
+
+        mask_data = mask_img.get_fdata().astype(bool)  # (x, y, z)
+    else:
+        # Use everything if mask was not provided.
+        mask_data = np.ones(img.shape[:3], dtype=bool)
+        mask_filename = 'no mask'
+
+    return mask_data, mask_filename
+
+
+def _correct_single_img(img, alpha=0.05, method='fdr_bh', mask_data=None):
     """
     Apply multiple-comparison correction to a p-value image.
 
@@ -178,7 +221,9 @@ def _correct_single_img(img, alpha=0.05, method='fdr_bh'):
     nib.Nifti1Image
         Image of corrected p-values with the same affine as ``img``.
     """
-    data = img.get_fdata()
+    data = img.get_fdata().copy()
+    if mask_data is not None:
+        data[np.invert(mask_data)] = np.nan  # Set voxels outside the mask to NaN.
 
     flat = data.flatten()
     nans = np.isnan(flat)
@@ -192,11 +237,13 @@ def _correct_single_img(img, alpha=0.05, method='fdr_bh'):
     new[nans] = np.nan
 
     corr = new.reshape(data.shape)
+    if mask_data is not None:
+        corr[np.invert(mask_data)] = 0.0  # set values otuside of the mask to 0s
 
     return nib.Nifti1Image(corr, affine=img.affine)
 
 
-def correct_single_image(file_in, meta=None, output_path=None, alpha=0.05, method='fdr_bh', contrast_idx=None, suffix='corrected', load_errors='raise'):
+def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', contrast_idx=None, suffix='corrected', load_errors='raise'):
     """
     Correct p-values in a single image for multiple comparisons.
 
@@ -233,14 +280,17 @@ def correct_single_image(file_in, meta=None, output_path=None, alpha=0.05, metho
     img, img_meta = _check_input_img(file_in, meta=meta, load_errors=load_errors)
 
     img = _select_contrast_img(img, contrast_idx=contrast_idx)
-    corr_img = _correct_single_img(img, alpha=alpha, method=method)
+    mask_data, mask_filename = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
+    corr_img = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
 
     meta = _create_meta(
         meta,
+        **img_meta,
         correction={
             'method': method,
             'alpha': alpha,
-            'contrast_idx': contrast_idx
+            'contrast_idx': contrast_idx,
+            'mask': mask_filename
         },
         source_meta=img_meta
     )
@@ -253,7 +303,7 @@ def correct_single_image(file_in, meta=None, output_path=None, alpha=0.05, metho
     return corr_img, meta
 
 
-def correct_images(file_in, meta=None, output_path=None, alpha=0.05, method='fdr_bh', suffix='corrected', load_errors='raise'):
+def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', suffix='corrected', load_errors='raise'):
     """
     Correct p-values for multiple comparisons across all contrasts in a
     4D image.
@@ -293,7 +343,8 @@ def correct_images(file_in, meta=None, output_path=None, alpha=0.05, method='fdr
 
     new_imgs = {}
     for contrast, img in img_dict.items():
-        new_imgs[contrast] = _correct_single_img(img, alpha=alpha, method=method)
+        mask_data, mask_filename = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
+        new_imgs[contrast] = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
     concat_img = nib.concat_images(list(new_imgs.values()))
@@ -304,6 +355,7 @@ def correct_images(file_in, meta=None, output_path=None, alpha=0.05, method='fdr
         correction={
             'method': method,
             'alpha': alpha,
+            'mask': mask_filename
         },
         source_meta=img_meta
     )
@@ -316,7 +368,7 @@ def correct_images(file_in, meta=None, output_path=None, alpha=0.05, method='fdr
     return concat_img, meta, new_imgs
 
 
-def correct_images_folder(path, meta=None, suffix='corrected', filename_contains='p_value', verbose=True, alpha=0.05, method='fdr_bh'):
+def correct_images_folder(path, meta=None, suffix='corrected', filename_contains='p_value', verbose=True, alpha=0.05, method='fdr_bh', mask_img=None):
     """
     Correct all p-value images in a folder for multiple comparisons.
 
@@ -345,9 +397,8 @@ def correct_images_folder(path, meta=None, suffix='corrected', filename_contains
         Family-wise error rate. Default is ``0.05``.
     method : str, optional
         Correction method. Default is ``'fdr_bh'``.
-    contrast_idx : int, optional
-        Contrast index passed to :func:`correct_single_image` for 3D
-        files.
+    mask_img : nib.Nifti1Image, optional
+        Mask image to use for correction. If not provided, no masking will be applied.
     """
     for file in Path(path).iterdir():
         if file.is_dir():
@@ -359,9 +410,9 @@ def correct_images_folder(path, meta=None, suffix='corrected', filename_contains
             continue
 
         if nib.load(file).ndim > 3:
-            corr_img, _ = correct_images(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn')
+            corr_img, _ = correct_images(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
         else:
-            corr_img, _ = correct_single_image(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn')
+            corr_img, _ = correct_single_image(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
 
         if verbose:
             corr_filename = corr_img.get_filename()
@@ -507,7 +558,7 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     masked_img = _roi_single_img(img, regions, atlas=atlas, outside_val=outside_val)
 
     meta = _create_meta(
-        meta,
+        meta=meta,
         roi={
             'atlas': atlas,
             'regions': regions,
@@ -584,7 +635,7 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     return concat_img, meta, new_imgs
 
 
-def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan):
+def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_data=None):
     """
     Threshold an image using a p-value map.
 
@@ -608,10 +659,12 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan):
     thresh_data = thresh_img.get_fdata()
     mask = thresh_data <= alpha
     masked_data = np.where(mask, img_data, thresh_val)
+    if mask_data is not None:
+        masked_data[np.invert(mask_data)] = 0.0  # Set voxels outside the mask to a background value.
     return nib.Nifti1Image(masked_data, affine=img.affine)
 
 
-def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, contrast_idx=None, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan):
+def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, contrast_idx=None, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan, mask_img=None):
     """
     Threshold a single image using a p-value map.
 
@@ -651,14 +704,17 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     p_img, p_meta = _check_input_img(thresh_img, meta=None, load_errors=load_errors)
     p_img = _select_contrast_img(p_img, contrast_idx=contrast_idx)
 
-    masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val)
+    mask_data, mask_filename = _prepare_mask(est_img, mask_img=mask_img, load_errors=load_errors)
+
+    masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     meta = _create_meta(
         meta,
         thresholding={
             'alpha': alpha,
             'contrast_idx': contrast_idx,
-            'thresh_val': thresh_val
+            'thresh_val': thresh_val,
+            'mask': mask_filename
         },
         thresholded_from_meta=est_meta,
         thresholding_meta=p_meta
@@ -672,7 +728,7 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     return masked_img, meta
 
 
-def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan):
+def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan, mask_img=None):
     """
     Threshold a 4D image using a p-value image, contrast by contrast.
 
@@ -729,7 +785,8 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     new_imgs = {}
     for contrast, est_contrast_img in est_dict.items():
         p_contrast_img = p_dict[contrast]
-        new_imgs[contrast] = _threshold_single_img(est_contrast_img, p_contrast_img, alpha=alpha, thresh_val=thresh_val)
+        mask_data, mask_filename = _prepare_mask(est_contrast_img, mask_img=mask_img, load_errors=load_errors)
+        new_imgs[contrast] = _threshold_single_img(est_contrast_img, p_contrast_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
     concat_img = nib.concat_images(list(new_imgs.values()))
@@ -738,7 +795,8 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         meta,
         thresholding={
             'alpha': alpha,
-            'thresh_val': thresh_val
+            'thresh_val': thresh_val,
+            'mask': mask_filename
         },
         thresholded_from_meta=est_meta,
         thresholding_meta=p_meta,
@@ -847,7 +905,6 @@ def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, o
         # Mark voxels where not all contrasts are inside the ROI as
         # outside the ROI.
         in_roi = ~np.all(outside_arr, axis=-1)
-        pdb.set_trace()
     else:
         # If below_thresh_val and outside_roi_val are indistinguishable
         # use all values without inferring what is inside/outside the
@@ -895,32 +952,15 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
     img, img_meta = _check_input_img(img, load_errors=load_errors)
     if img.ndim != 4:
         raise ValueError(f'img must be 4D, got {img.ndim}D.')
-    
-    if mask_img is not None:
-        mask_img, _ = _check_input_img(mask_img, load_errors=load_errors)
-        # Check if the mask needs to be resampled to match the image.
-        shapes_match = img.shape[:3] == mask_img.shape[:3]
-        # Check affine (voxel size + orientation + origin).
-        affines_match = np.allclose(img.affine, mask_img.affine, atol=1e-3)
-        if not shapes_match or not affines_match:
-            mask_img = nilearn.image.resample_to_img(mask_img, img, interpolation='nearest')
 
-        mask_data = mask_img.get_fdata().astype(bool)  # (x, y, z)
-    else:
-        # Use everything if mask was not provided.
-        mask_data = np.ones(img.shape[:3], dtype=bool)
+    mask_data, mask_filename = _prepare_mask(img, mask_img, load_errors=load_errors)
 
     data = img.get_fdata()  # (x, y, z, t)
     data_2d = data[mask_data, :]  # (n_voxels, t)
 
-    # voxel_data = data_2d[367420, :]
-    # # Call func directly — same as apply_along_axis would
-    # result = func(voxel_data, **func_kwargs)
-    # pdb.set_trace()
-
     result_1d = np.apply_along_axis(func, axis=1, arr=data_2d, **func_kwargs)  # (n_voxels,)
-    # Put back into volume
-    result_3d = np.full(mask_data.shape, 0.0, dtype=np.float32)
+    # Put back into volume but use 3D.
+    result_3d = np.full(img.shape[:3], 0.0, dtype=np.float32)
     result_3d[mask_data] = result_1d
 
     result_img = nib.Nifti1Image(result_3d, img.affine, img.header)
@@ -928,7 +968,8 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
     meta = _create_meta(meta, apply={
         'func_name': func.__name__ if hasattr(func, '__name__') else str(func),
         'func_kwargs': func_kwargs,
-        'source_meta': img_meta
+        'source_meta': img_meta,
+        'mask': mask_filename
     })
 
     if output_path is None:
@@ -943,7 +984,7 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
     return result_img, meta
 
 
-def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1):
+def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, only_positive=True):
     """
     Winner-take-all function to be applied with `apply_over_time`.
 
@@ -970,14 +1011,20 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1):
 
     if np.isnan(below_thresh_val) and np.isnan(outside_val):
         # Can't distinguish outside from below_thresh; use data as is.
-        outside = np.ones(data.size, dtype=bool)
+        outside = np.zeros(data.size, dtype=bool)
     else:
         outside = np.isnan(data) if np.isnan(outside_val) else (data == outside_val)
         if outside.all():
             return 0
 
     below_thresh = np.isnan(data) if np.isnan(below_thresh_val) else (data == below_thresh_val)
-    valid = ~outside & ~below_thresh
+
+    if only_positive:
+        positive_filter = data >= 0
+    else:
+        positive_filter = np.ones(data.size, dtype=bool)
+
+    valid = ~outside & ~below_thresh & positive_filter
     if not valid.any():
         return no_result_idx
     
@@ -987,7 +1034,7 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1):
     valid_data = data[valid_indices]
     if np.nansum(valid_data) == 0:
         return 0
-    max_valid_idx = np.argmax(data[valid_indices])
+    max_valid_idx = np.argmax(valid_data)
     
     return valid_indices[max_valid_idx] + 1  # +1 to reserve 0 for outside ROI
 
