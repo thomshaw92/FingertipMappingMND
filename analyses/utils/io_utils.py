@@ -16,7 +16,51 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _split_extension(path):
+    """
+    Split a file name into its base name and full extension.
+
+    Unlike ``Path.stem``/``Path.suffix``, everything from the first dot
+    of the file name counts as the extension, so compound extensions are
+    kept together, e.g. ``test.surf.gii`` -> ``('test', '.surf.gii')``
+    and ``img.nii.gz`` -> ``('img', '.nii.gz')``. File names must
+    therefore not contain dots other than in the extension.
+
+    Parameters
+    ----------
+    path : path-like
+        Path to the file.
+
+    Returns
+    -------
+    base : str
+        File name without the extension (and without the parent folder).
+    extension : str
+        Full extension including the leading dot, ``''`` if none.
+    """
+    name = Path(path).name
+    extension = ''.join(Path(name).suffixes)
+    return name[:len(name) - len(extension)], extension
+
+
 def _get_sidecar_json(path):
+    """
+    Return the path of the JSON sidecar belonging to ``path``.
+
+    The sidecar sits next to the file and shares its name up to the
+    first extension, e.g. ``img.nii.gz`` -> ``img.json`` and
+    ``surf.func.gii`` -> ``surf.json``.
+
+    Parameters
+    ----------
+    path : path-like
+        Path to the data file.
+
+    Returns
+    -------
+    Path
+        Path to the JSON sidecar.
+    """
     path = Path(path)
     no_ext = path.parent / path.stem.replace('.nii', '')
     json_filename = no_ext.with_suffix('.json')
@@ -25,6 +69,9 @@ def _get_sidecar_json(path):
 
 
 class PathEncoder(json.JSONEncoder):
+    """
+    JSON encoder that writes ``pathlib.Path`` objects as strings.
+    """
     def default(self, obj):
         if isinstance(obj, Path):
             return str(obj)
@@ -35,8 +82,20 @@ def load_sidecar(path, errors='raise'):
     """
     Load the JSON sidecar of ``path``.
 
-    Returns ``None`` if the sidecar does not exist and ``errors`` is not
-    ``'raise'``.
+    Parameters
+    ----------
+    path : path-like
+        Path to the data file (not to the sidecar itself).
+    errors : {'raise', 'warn', 'ignore'}, optional
+        What to do if the sidecar does not exist: raise a
+        ``FileNotFoundError``, log a warning, or do nothing. Default is
+        ``'raise'``.
+
+    Returns
+    -------
+    dict or None
+        Sidecar contents, or ``None`` if it does not exist and
+        ``errors`` is not ``'raise'``.
     """
     json_filename = _get_sidecar_json(path)
     if not json_filename.exists():
@@ -51,7 +110,16 @@ def load_sidecar(path, errors='raise'):
 
 
 def save_sidecar(path, meta):
-    """Save ``meta`` as the JSON sidecar of ``path``."""
+    """
+    Save ``meta`` as the JSON sidecar of ``path``.
+
+    Parameters
+    ----------
+    path : path-like
+        Path to the data file (not to the sidecar itself).
+    meta : dict
+        Sidecar contents. ``Path`` objects are written as strings.
+    """
     with open(_get_sidecar_json(path), 'w') as json_sidecar:
         json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
 
@@ -60,7 +128,7 @@ def save_sidecar(path, meta):
 def silent_print():
     """
     Context manager to temporarily suppress print output.
-    
+
     Usage:
         with silent_print():
             print('This will not appear')
@@ -78,8 +146,9 @@ def silent_print():
 @contextmanager
 def optional_silent_print(verbose):
     """
-    Context manager that suppresses print output only if verbose is False.
-    
+    Context manager that suppresses print output only if verbose is
+    False.
+
     Usage:
         with optional_silent_print(verbose=False):
             print('This will not appear')
@@ -93,7 +162,32 @@ def optional_silent_print(verbose):
 
 def walk_bids_folders(base_path, sub_prefix='sub-', ses_prefix='ses-'):
     """
-    Walk through folders but only include session folders.
+    Walk a BIDS-like tree and yield only subject (and session) folders.
+
+    Parameters
+    ----------
+    base_path : path-like
+        Root folder to walk.
+    sub_prefix : str, optional
+        Prefix of subject folders. Default is ``'sub-'``.
+    ses_prefix : str or None, optional
+        Prefix of session folders. If ``None`` or empty, subject folders
+        are yielded instead of session folders and ``ses`` is ``None``.
+        Default is ``'ses-'``.
+
+    Yields
+    ------
+    sub : str
+        Subject folder name.
+    ses : str or None
+        Session folder name, or ``None`` if sessions are not used.
+    walk_entry : tuple
+        ``(root, folders, files)`` as returned by ``os.walk``.
+
+    Raises
+    ------
+    ValueError
+        If ``sub_prefix`` is ``None``.
     """
     # If prefix is None make sure that any string gets matched.
     if sub_prefix is None:
@@ -122,7 +216,59 @@ def walk_bids_folders(base_path, sub_prefix='sub-', ses_prefix='ses-'):
             yield sub, ses, (root, folders, files)
 
 
+def get_output_path(input_path, suffix, extension=None):
+    """
+    Derive an output file path by appending a suffix to the input stem.
+
+    Handles compound extensions such as ``.nii.gz`` correctly.
+
+    Parameters
+    ----------
+    input_path : path-like
+        Path to the input file.
+    suffix : str
+        Suffix to append (after an underscore) before the extension(s).
+    extension : str, optional
+        Extension of the output file, including the leading dot.
+        Defaults to the extension(s) of ``input_path``.
+
+    Returns
+    -------
+    str
+        Output file path.
+    """
+    input_path = Path(input_path)
+    # Handles compound extensions (e.g., .nii.gz, .surf.gii).
+    base, full_ext = _split_extension(input_path)
+    if extension is not None:
+        full_ext = extension
+    return f'{input_path.parent}/{base}_{suffix}{full_ext}'
+
+
 def load_image(img_path, load_img=True, load_meta=True, errors='raise'):
+    """
+    Load an image and/or its JSON sidecar.
+
+    Parameters
+    ----------
+    img_path : path-like
+        Path to the image.
+    load_img : bool, optional
+        Whether to load the image. Default is ``True``.
+    load_meta : bool, optional
+        Whether to load the JSON sidecar. Default is ``True``.
+    errors : {'raise', 'warn', 'ignore'}, optional
+        What to do if loading fails (including a missing sidecar): raise
+        the error, log a warning, or log at info level. Default is
+        ``'raise'``.
+
+    Returns
+    -------
+    img : nib.spatialimages.SpatialImage or None
+        Loaded image, ``None`` if not requested or loading failed.
+    meta : dict or None
+        Sidecar contents, ``None`` if not requested or loading failed.
+    """
     img_path = Path(img_path)
     img = None
     meta = None
@@ -145,6 +291,35 @@ def load_image(img_path, load_img=True, load_meta=True, errors='raise'):
 
 
 def load_contrasts_img(img_path, errors='raise', labels_key='volume_labels'):
+    """
+    Load a 4D image whose volumes are labelled in its JSON sidecar.
+
+    Parameters
+    ----------
+    img_path : path-like
+        Path to the 4D image.
+    errors : {'raise', 'warn', 'ignore'}, optional
+        How to handle loading errors, see :func:`load_image`. Default is
+        ``'raise'``.
+    labels_key : str, optional
+        Sidecar key holding the list of volume labels, in volume order.
+        Default is ``'volume_labels'``.
+
+    Returns
+    -------
+    img : nib.Nifti1Image or None
+        The 4D image.
+    meta : dict or None
+        Sidecar contents.
+    img_dict : dict
+        Mapping of volume label to the 3D volume. Empty if the image or
+        sidecar could not be loaded.
+
+    Raises
+    ------
+    ValueError
+        If the image is not 4D.
+    """
     img, meta = load_image(img_path, errors=errors)
     # Skip label extraction and image slicing if meta or img is missing.
     if meta is None or img is None:
@@ -163,6 +338,18 @@ def load_contrasts_img(img_path, errors='raise', labels_key='volume_labels'):
 
 
 def save_image(img, img_path, meta=None):
+    """
+    Save an image together with its JSON sidecar.
+
+    Parameters
+    ----------
+    img : nib.spatialimages.SpatialImage
+        Image to save.
+    img_path : path-like
+        Output path. The sidecar is written next to it.
+    meta : dict, optional
+        Sidecar contents. An empty sidecar is written if not given.
+    """
     if meta is None:
         meta = {}
 
@@ -171,6 +358,24 @@ def save_image(img, img_path, meta=None):
 
 
 def save_figure(fig, fig_path, meta=None, save_empty_sidecar=False, interactive=False):
+    """
+    Save a figure, and its JSON sidecar if there is metadata.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure or nilearn plotly display
+        Figure to save.
+    fig_path : path-like
+        Output path.
+    meta : dict, optional
+        Sidecar contents.
+    save_empty_sidecar : bool, optional
+        Write a sidecar even if ``meta`` is empty. Default is ``False``.
+    interactive : bool, optional
+        If ``True``, ``fig`` is a nilearn plotly display and is saved as
+        HTML. Otherwise it is saved as a static image at 200 dpi.
+        Default is ``False``.
+    """
     if meta is None:
         meta = {}
 
@@ -184,6 +389,21 @@ def save_figure(fig, fig_path, meta=None, save_empty_sidecar=False, interactive=
 
 
 def save_view(view, view_path, meta=None, save_empty_sidecar=False):
+    """
+    Save a nilearn interactive view as HTML, and its JSON sidecar if
+    there is metadata.
+
+    Parameters
+    ----------
+    view : nilearn.plotting.html_surface.SurfaceView
+        View to save.
+    view_path : path-like
+        Output path.
+    meta : dict, optional
+        Sidecar contents.
+    save_empty_sidecar : bool, optional
+        Write a sidecar even if ``meta`` is empty. Default is ``False``.
+    """
     if meta is None:
         meta = {}
 
@@ -194,8 +414,32 @@ def save_view(view, view_path, meta=None, save_empty_sidecar=False):
 
 
 def _get_surface_paths(path, hemi=None, data_type='mesh'):
+    """
+    Build the path of a mesh or data file belonging to a surface image.
+
+    The suffixes are inserted before the extension(s), e.g. ``surf.gii``
+    with ``data_type='data'`` and ``hemi='L'`` ->
+    ``surf_data_hemi-L.gii``.
+
+    Parameters
+    ----------
+    path : path-like
+        Base path of the surface image, as passed to
+        :func:`save_surface`.
+    hemi : {'L', 'R'} or None, optional
+        Hemisphere. If ``None`` no hemisphere suffix is added. Default
+        is ``None``.
+    data_type : {'mesh', 'data'} or None, optional
+        Which part of the surface image. If ``None`` no suffix is added.
+        Default is ``'mesh'``.
+
+    Returns
+    -------
+    Path
+        Path to the file.
+    """
     path = Path(path)
-    full_ext = "".join(path.suffixes)
+    base, full_ext = _split_extension(path)
 
     hemi_suffix = ''
     if hemi is not None:
@@ -205,12 +449,30 @@ def _get_surface_paths(path, hemi=None, data_type='mesh'):
     if data_type is not None:
         data_suffix = f'_{data_type}'
 
-    surf_path = path.parent / f'{path.stem}{data_suffix}{hemi_suffix}{full_ext}'
+    surf_path = path.parent / f'{base}{data_suffix}{hemi_suffix}{full_ext}'
 
     return surf_path
 
 
 def save_surface(surf_img, path, meta=None):
+    """
+    Save a surface image as mesh and data GIFTI files plus a JSON
+    sidecar.
+
+    nilearn writes one file per hemisphere, so for ``path='surf.gii'``
+    the files are ``surf_mesh_hemi-{L,R}.gii``,
+    ``surf_data_hemi-{L,R}.gii`` and ``surf.json``. Use
+    :func:`load_surface` to read them back.
+
+    Parameters
+    ----------
+    surf_img : nilearn.surface.SurfaceImage
+        Surface image to save.
+    path : path-like
+        Base output path.
+    meta : dict, optional
+        Sidecar contents. An empty sidecar is written if not given.
+    """
     if meta is None:
         meta = {}
 
@@ -226,6 +488,21 @@ def save_surface(surf_img, path, meta=None):
 
 
 def load_surface(path):
+    """
+    Load a surface image saved with :func:`save_surface`.
+
+    Parameters
+    ----------
+    path : path-like
+        Base path the surface image was saved with.
+
+    Returns
+    -------
+    surf_image : nilearn.surface.SurfaceImage
+        The surface image.
+    meta : dict
+        Sidecar contents, empty (with a warning) if there is no sidecar.
+    """
     path = Path(path)
 
     mesh = {
@@ -246,6 +523,19 @@ def load_surface(path):
 
 
 def save_gifti(data, path, meta=None):
+    """
+    Save a single-hemisphere data array as a GIFTI file plus a JSON
+    sidecar.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Per-vertex values. Saved as float32.
+    path : path-like
+        Output path.
+    meta : dict, optional
+        Sidecar contents. An empty sidecar is written if not given.
+    """
     if meta is None:
         meta = {}
 
@@ -260,18 +550,63 @@ def save_gifti(data, path, meta=None):
 
 
 def convert_to_sec(t):
+    """
+    Convert an ``HH:MM:SS`` duration (e.g. from ``sacct``) to seconds.
+
+    Parameters
+    ----------
+    t : str
+        Duration as ``HH:MM:SS``; seconds may be fractional.
+
+    Returns
+    -------
+    float
+        Duration in seconds.
+    """
     h, m, s = t.split(':')
     dur = float(s) + (float(m)*60) + (float(h)*60*60)
     return dur
 
 
 def convert_to_min(t):
+    """
+    Convert an ``HH:MM:SS`` duration (e.g. from ``sacct``) to minutes.
+
+    Parameters
+    ----------
+    t : str
+        Duration as ``HH:MM:SS``; seconds may be fractional.
+
+    Returns
+    -------
+    float
+        Duration in minutes.
+    """
     h, m, s = t.split(':')
     dur = (float(s)/60) + float(m) + (float(h)*60)
     return dur
 
 
 def job_info(job_id, out_format='JobID,JobName,State'):
+    """
+    Get information about a SLURM job of the current user from
+    ``sacct``.
+
+    Parameters
+    ----------
+    job_id : str
+        SLURM job ID (array jobs included).
+    out_format : str, optional
+        Comma-separated ``sacct --format`` fields. Default is
+        ``'JobID,JobName,State'``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per job step with the requested fields and an
+        ``array_index`` column. If ``Elapsed`` is requested,
+        ``<col>_sec`` and ``<col>_min`` columns are added.
+    """
     result = subprocess.run(["sacct", "--user", os.environ.get('USER'), "-j", job_id, f"--format={out_format}", "-P"], capture_output=True, text=True)
     result = result.stdout.split('\n')
     result = [line.split('|') for line in result if line]
@@ -290,6 +625,23 @@ def job_info(job_id, out_format='JobID,JobName,State'):
 
 
 def unpack_gifti(sphere_path, output_path='/tmp/fsaverage_sphere.surf.gii'):
+    """
+    Decompress a gzipped GIFTI file (e.g. an fsaverage sphere from
+    nilearn).
+
+    Parameters
+    ----------
+    sphere_path : path-like
+        Path to the ``.gii.gz`` file.
+    output_path : path-like, optional
+        Where to write the uncompressed file. Default is
+        ``'/tmp/fsaverage_sphere.surf.gii'``.
+
+    Returns
+    -------
+    path-like
+        ``output_path``.
+    """
     with gzip.open(sphere_path, 'rb') as f_in:
         with open(output_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)

@@ -207,7 +207,7 @@ def create_bodymap(sub, ses, config, base_dir):
     )
 
     logging.info('Saving fsaverage surf as HTML')
-    display, meta = analysis.make_html2(
+    display, meta = analysis.make_html(
         fsavg_files,
         output_path=base_dir / html_tpl.format(sub=sub, ses=ses),
         hemi='both',

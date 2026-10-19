@@ -15,10 +15,12 @@ Every file written by ``analysis`` gets a JSON sidecar of the form::
             "timestamp": "2026-10-19T12:00:00",
             "parameters": {...},
             "inputs": {
-              "p_values": {"file": "/abs/path.nii.gz"},           # a source
-              "img": {"step": "<step id>", "file": "/abs/out.nii.gz"}  # output of an earlier step
+              # A source file:
+              "p_values": {"file": "/abs/path.nii.gz"},
+              # The output of an earlier step:
+              "img": {"step": "<step id>", "file": "/abs/out.nii.gz"}
             },
-            "output": "/abs/path/to/output.nii.gz"   # null if kept in memory
+            "output": "/abs/out.nii.gz"  # null if kept in memory
           }
         ],
         "sources": {                   # files that entered the pipeline
@@ -30,8 +32,8 @@ Every file written by ``analysis`` gets a JSON sidecar of the form::
       }
     }
 
-Each step, source and run appears exactly once, however many times it
-is reached through different inputs, so the sidecar of any file is a
+Each step, source and run appears exactly once, however many times it is
+reached through different inputs, so the sidecar of any file is a
 complete and self-contained record of how it was made.
 """
 import datetime
@@ -89,7 +91,10 @@ def _current_run():
 
 
 def _jsonable(obj):
-    """Convert ``obj`` into something ``json.dump`` can write as strict JSON."""
+    """
+    Convert ``obj`` into something ``json.dump`` can write as strict
+    JSON.
+    """
     if isinstance(obj, dict):
         return {str(k): _jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
@@ -183,8 +188,8 @@ def record_step(function, inputs, parameters=None, output_path=None, fields=None
             runs.update(prov.get('runs', {}))
             refs[name] = {'step': prov['generated_by'], 'file': path}
         else:
-            # A file entering the pipeline (or an in-memory image without
-            # any metadata, whose history cannot be recovered).
+            # A file entering the pipeline (or an in-memory image
+            # without any metadata, whose history cannot be recovered).
             refs[name] = {'file': path}
             if path is not None:
                 sources[path] = meta or {}

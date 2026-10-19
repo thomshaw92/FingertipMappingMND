@@ -1,6 +1,5 @@
 import contextlib
 import copy
-import json
 import os
 import warnings
 import tempfile
@@ -100,32 +99,6 @@ def _check_input_img(img, meta=None, load_errors='raise'):
     return img, provenance.describe(img, meta)
 
 
-def _get_output_path(input_path, suffix, extension=None):
-    """
-    Derive an output file path by appending a suffix to the input stem.
-
-    Handles compound extensions such as ``.nii.gz`` correctly.
-
-    Parameters
-    ----------
-    input_path : path-like
-        Path to the input file.
-    suffix : str
-        Suffix to append before the file extension(s).
-
-    Returns
-    -------
-    str
-        Output file path with the suffix inserted before the extension.
-    """
-    input_path = Path(input_path)
-    # For files with multiple extensions (e.g., .nii.gz).
-    full_ext = "".join(input_path.suffixes)
-    if extension is not None:
-        full_ext = extension
-    return f'{input_path.parent}/{input_path.stem.replace(".nii", "")}_{suffix}{full_ext}'
-
-
 def _prepare_mask(img, mask_img=None, load_errors='raise'):
     """
     Prepare a binary mask for a 3D or 4D image.
@@ -174,7 +147,20 @@ def _prepare_mask(img, mask_img=None, load_errors='raise'):
 
 
 def _atlas_input(atlas):
-    """Describe a file atlas for provenance; nilearn atlases are parameters."""
+    """
+    Describe an atlas for ``provenance.record_step``.
+
+    Parameters
+    ----------
+    atlas : str or path-like
+        Path to a NIfTI atlas or a nilearn atlas name.
+
+    Returns
+    -------
+    tuple or None
+        ``(path, meta)`` for a NIfTI atlas. ``None`` for a nilearn
+        atlas, which is recorded as a parameter instead.
+    """
     atlas_str = str(atlas)
     if atlas_str.endswith('.nii') or atlas_str.endswith('.nii.gz'):
         return provenance.describe(atlas_str)
@@ -185,18 +171,24 @@ def _correct_single_img(img, alpha=0.05, method='fdr_bh', mask_data=None):
     """
     Apply multiple-comparison correction to a p-value image.
 
-    NaN voxels are excluded from correction and preserved in the output.
+    NaN voxels and voxels outside the mask are excluded from the
+    correction. NaN voxels stay NaN; voxels outside the mask are set to
+    ``0``.
 
     Parameters
     ----------
     img : nib.Nifti1Image
         3D image of uncorrected p-values.
     alpha : float, optional
-        Family-wise error rate. Default is ``0.05``.
+        Error rate passed to ``multipletests`` (FDR for ``'fdr_*'``
+        methods, FWER otherwise). Default is ``0.05``.
     method : str, optional
         Correction method passed to
         ``statsmodels.stats.multitest.multipletests``. Default is
         ``'fdr_bh'`` (Benjamini-Hochberg FDR).
+    mask_data : np.ndarray, optional
+        Boolean (x, y, z) array; only voxels where it is ``True`` are
+        corrected. Default is to use all voxels.
 
     Returns
     -------
@@ -235,15 +227,21 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
         Input p-value image. If a path is given the image is loaded from
         disk.
     meta : dict, optional
-        Sidecar of ``file_in``. Loaded from disk if not given.
+        Sidecar of ``file_in``. Required to keep the provenance of
+        in-memory images; loaded from disk for paths if not given.
     output_path : path-like or None, optional
         Path at which to save the corrected image. If ``None`` a default
         path is derived from ``file_in`` and ``suffix``. Pass ``False``
         to suppress saving.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask. Only voxels inside it are corrected; voxels outside
+        are set to ``0``. Resampled to ``file_in`` if needed.
     alpha : float, optional
-        Family-wise error rate. Default is ``0.05``.
+        Error rate (FDR for ``'fdr_*'`` methods, FWER otherwise).
+        Default is ``0.05``.
     method : str, optional
-        Correction method. Default is ``'fdr_bh'``.
+        Correction method passed to ``multipletests``. Default is
+        ``'fdr_bh'``.
     contrast_idx : int, optional
         Index of the contrast to correct when ``file_in`` is 4D.
     suffix : str, optional
@@ -266,7 +264,7 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
     corr_img = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
 
     if output_path is None:
-        output_path = _get_output_path(file_in, suffix=suffix)
+        output_path = io_utils.get_output_path(file_in, suffix=suffix)
 
     meta = provenance.record_step(
         'analysis.correct_single_image',
@@ -291,18 +289,23 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
     Parameters
     ----------
     file_in : path-like
-        Path to a 4D image whose volumes correspond to individual
-        contrasts.
+        Path to a 4D image whose volumes are labelled by
+        ``volume_labels`` in its sidecar.
     meta : dict, optional
         Sidecar of ``file_in``. Loaded from disk if not given.
     output_path : path-like or None, optional
         Path at which to save the corrected 4D image. If ``None`` a
         default path is derived from ``file_in`` and ``suffix``. Pass
         ``False`` to suppress saving.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask. Only voxels inside it are corrected; voxels outside
+        are set to ``0``. Resampled to ``file_in`` if needed.
     alpha : float, optional
-        Family-wise error rate. Default is ``0.05``.
+        Error rate (FDR for ``'fdr_*'`` methods, FWER otherwise).
+        Default is ``0.05``.
     method : str, optional
-        Correction method. Default is ``'fdr_bh'``.
+        Correction method passed to ``multipletests``. Default is
+        ``'fdr_bh'``.
     suffix : str, optional
         Suffix appended to the filename when generating a default output
         path. Default is ``'corrected'``.
@@ -316,6 +319,8 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
         same order as the input.
     meta : dict
         Sidecar of the corrected image.
+    new_imgs : dict
+        Mapping of contrast label to its corrected 3D image.
     """
     img, img_meta, img_dict = io_utils.load_contrasts_img(file_in, errors=load_errors)
     img_input = provenance.describe(file_in, meta if meta is not None else img_meta)
@@ -329,7 +334,7 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
     concat_img = nib.concat_images(list(new_imgs.values()))
 
     if output_path is None:
-        output_path = _get_output_path(file_in, suffix=suffix)
+        output_path = io_utils.get_output_path(file_in, suffix=suffix)
 
     meta = provenance.record_step(
         'analysis.correct_images',
@@ -353,7 +358,8 @@ def correct_images_folder(path, suffix='corrected', filename_contains='p_value',
     its source with ``suffix`` appended to the filename. 3D files are
     corrected with :func:`correct_single_image`; 4D files with
     :func:`correct_images`. Already corrected files (i.e. those whose
-    name contains ``suffix``) are skipped.
+    name contains ``suffix``) are skipped. Loading errors are logged as
+    warnings.
 
     Parameters
     ----------
@@ -369,11 +375,14 @@ def correct_images_folder(path, suffix='corrected', filename_contains='p_value',
         If ``True``, log each skipped and corrected file. Default is
         ``True``.
     alpha : float, optional
-        Family-wise error rate. Default is ``0.05``.
+        Error rate (FDR for ``'fdr_*'`` methods, FWER otherwise).
+        Default is ``0.05``.
     method : str, optional
         Correction method. Default is ``'fdr_bh'``.
-    mask_img : nib.Nifti1Image, optional
-        Mask image to use for correction. If not provided, no masking will be applied.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask used for every file. If not provided, all voxels are
+        included in the correction (including voxels outside of the
+        brain).
     """
     for file in Path(path).iterdir():
         if file.is_dir():
@@ -405,14 +414,16 @@ def _roi_single_img(img, regions, atlas='destrieux_2009', outside_val=np.nan):
         Image to mask.
     regions : list of str
         Atlas region names to retain.
-    atlas : str, optional
-        Atlas name passed to :func:`get_roi_mask`. Default is
-        ``'destrieux_2009'``.
+    atlas : str or path-like, optional
+        nilearn atlas name or path to a NIfTI atlas, see
+        :func:`get_roi_mask`. Default is ``'destrieux_2009'``.
+    outside_val : float, optional
+        Value given to voxels outside the ROI. Default is NaN.
 
     Returns
     -------
     nib.Nifti1Image
-        Image with voxels outside the ROI set to NaN.
+        Image with voxels outside the ROI set to ``outside_val``.
     """
     mask = get_roi_mask(img=img, atlas=atlas, regions=regions, use_temp=False, verbose=0)
     img_data = img.get_fdata()
@@ -479,7 +490,8 @@ def get_roi_mask(img, regions, atlas='destrieux_2009', use_temp=True, verbose=1)
             mask = nilearn.image.math_img(" + ".join([f"(img == {i})" for i in region_indices]), img=atlas_img)
         else:
             getter = getattr(nilearn.datasets, f'fetch_atlas_{atlas}')
-            # Either use a temp directory or use None (which defaults to nilearn's caching directory).
+            # Either use a temp directory or use None (which defaults
+            # to nilearn's caching directory).
             ctx = tempfile.TemporaryDirectory() if use_temp else contextlib.nullcontext()
             with ctx as tmpdir:
                 dest = getter(data_dir=tmpdir, verbose=verbose)
@@ -510,8 +522,9 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
         in-memory images; loaded from disk for paths if not given.
     contrast_idx : int, optional
         Index of the contrast to mask when ``input_path`` is 4D.
-    atlas : str, optional
-        Atlas name. Default is ``'destrieux_2009'``.
+    atlas : str or path-like, optional
+        nilearn atlas name or path to a NIfTI atlas, see
+        :func:`get_roi_mask`. Default is ``'destrieux_2009'``.
     output_path : path-like or None, optional
         Path at which to save the masked image. If ``None`` a default
         path is derived from ``input_path`` and ``suffix``. Pass
@@ -521,11 +534,13 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
         path. Default is ``'roi'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    outside_val : float, optional
+        Value given to voxels outside the ROI. Default is NaN.
 
     Returns
     -------
     masked_img : nib.Nifti1Image
-        Image with voxels outside the ROI set to NaN.
+        3D image with voxels outside the ROI set to ``outside_val``.
     meta : dict
         Sidecar of the masked image.
     """
@@ -534,7 +549,7 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     masked_img = _roi_single_img(img, regions, atlas=atlas, outside_val=outside_val)
 
     if output_path is None:
-        output_path = _get_output_path(input_path, suffix=suffix)
+        output_path = io_utils.get_output_path(input_path, suffix=suffix)
 
     atlas_input = _atlas_input(atlas)
     meta = provenance.record_step(
@@ -562,14 +577,15 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     Parameters
     ----------
     input_path : path-like
-        Path to a 4D image whose volumes correspond to individual
-        contrasts.
+        Path to a 4D image whose volumes are labelled by
+        ``volume_labels`` in its sidecar.
     regions : list of str
         Atlas region names to retain.
     meta : dict, optional
         Sidecar of ``input_path``. Loaded from disk if not given.
-    atlas : str, optional
-        Atlas name. Default is ``'destrieux_2009'``.
+    atlas : str or path-like, optional
+        nilearn atlas name or path to a NIfTI atlas, see
+        :func:`get_roi_mask`. Default is ``'destrieux_2009'``.
     output_path : path-like or None, optional
         Path at which to save the masked 4D image. If ``None`` a default
         path is derived from ``input_path`` and ``suffix``. Pass
@@ -579,6 +595,8 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
         path. Default is ``'roi'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    outside_val : float, optional
+        Value given to voxels outside the ROI. Default is NaN.
 
     Returns
     -------
@@ -587,6 +605,8 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
         the input.
     meta : dict
         Sidecar of the masked image.
+    new_imgs : dict
+        Mapping of contrast label to its masked 3D image.
     """
     img, img_meta, img_dict = io_utils.load_contrasts_img(input_path, errors=load_errors)
     img_input = provenance.describe(input_path, meta if meta is not None else img_meta)
@@ -599,7 +619,7 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     concat_img = nib.concat_images(list(new_imgs.values()))
 
     if output_path is None:
-        output_path = _get_output_path(input_path, suffix=suffix)
+        output_path = io_utils.get_output_path(input_path, suffix=suffix)
 
     atlas_input = _atlas_input(atlas)
     meta = provenance.record_step(
@@ -624,16 +644,22 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_d
     """
     Threshold an image using a p-value map.
 
-    Voxels where the p-value exceeds ``alpha`` are set to NaN.
+    Voxels where the p-value exceeds ``alpha`` are set to ``thresh_val``
+    and voxels outside the mask are set to ``0``.
 
     Parameters
     ----------
     img : nib.Nifti1Image
-        Image to threshold (e.g. a contrast estimate map).
+        Image to threshold (e.g. a z-score map).
     thresh_img : nib.Nifti1Image
         Corresponding p-value image with the same shape as ``img``.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
+    thresh_val : float, optional
+        Value given to voxels above ``alpha``. Default is NaN.
+    mask_data : np.ndarray, optional
+        Boolean (x, y, z) array; voxels where it is ``False`` are set to
+        ``0``. Default is no masking.
 
     Returns
     -------
@@ -656,15 +682,17 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     Parameters
     ----------
     img_to_thresh : path-like or nib.Nifti1Image
-        Image to threshold (e.g., a contrast estimate map).
+        Image to threshold (e.g. a z-score map).
     thresh_img : path-like or nib.Nifti1Image
-        Corresponding p-value image used as the threshold mask.
+        Corresponding p-value image used as the threshold mask. Its
+        sidecar is loaded from disk if it is a path.
     meta : dict, optional
-        Sidecar of ``img_to_thresh``. Loaded from disk if not given.
+        Sidecar of ``img_to_thresh``. Required to keep the provenance of
+        in-memory images; loaded from disk for paths if not given.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
     contrast_idx : int, optional
-        Index of the contrast to threshold when either input is 4D.
+        Index of the contrast to threshold when the inputs are 4D.
     output_path : path-like or None, optional
         Path at which to save the thresholded image. If ``None`` a
         default path is derived from ``img_to_thresh`` and ``suffix``.
@@ -674,6 +702,11 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
         path. Default is ``'thresholded'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    thresh_val : float, optional
+        Value given to voxels above ``alpha``. Default is NaN.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask; voxels outside it are set to ``0``. Resampled to
+        ``img_to_thresh`` if needed.
 
     Returns
     -------
@@ -693,7 +726,7 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     if output_path is None:
-        output_path = _get_output_path(img_to_thresh, suffix=suffix)
+        output_path = io_utils.get_output_path(img_to_thresh, suffix=suffix)
 
     meta = provenance.record_step(
         'analysis.threshold_single_image',
@@ -719,10 +752,11 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     Parameters
     ----------
     img_to_thresh : path-like
-        Path to a 4D image to threshold (e.g., contrast estimate maps).
+        Path to a 4D image to threshold (e.g. z-score maps), with
+        ``volume_labels`` in its sidecar.
     thresh_img : path-like
         Path to the p-value image used as the threshold mask. May be 3D
-        (applied to all contrasts) or 4D (matched per contrast).
+        (applied to all contrasts) or 4D (matched per contrast label).
     meta : dict, optional
         Sidecar of ``img_to_thresh``. Loaded from disk if not given.
     alpha : float, optional
@@ -736,6 +770,11 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         path. Default is ``'thresholded'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    thresh_val : float, optional
+        Value given to voxels above ``alpha``. Default is NaN.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask; voxels outside it are set to ``0``. Resampled to
+        ``img_to_thresh`` if needed.
 
     Returns
     -------
@@ -744,11 +783,13 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         input.
     meta : dict
         Sidecar of the thresholded image.
+    new_imgs : dict
+        Mapping of contrast label to its thresholded 3D image.
 
     Raises
     ------
     ValueError
-        If both images are 4D but their contrast keys do not match.
+        If both images are 4D but their contrast labels do not match.
     """
     est_img, est_meta, est_dict = io_utils.load_contrasts_img(img_to_thresh, errors=load_errors)
     est_input = provenance.describe(img_to_thresh, meta if meta is not None else est_meta)
@@ -774,7 +815,7 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     concat_img = nib.concat_images(list(new_imgs.values()))
 
     if output_path is None:
-        output_path = _get_output_path(img_to_thresh, suffix=suffix)
+        output_path = io_utils.get_output_path(img_to_thresh, suffix=suffix)
 
     meta = provenance.record_step(
         'analysis.threshold_images',
@@ -790,150 +831,51 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     return concat_img, meta, new_imgs
 
 
-def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, outside_roi_val=np.nan, no_result_idx=-1, suffix='argmax', inconsistent_roi='raise', load_errors='raise'):
+def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
     """
-    Return the contrast index with the highest z-score per voxel.
+    Apply a function to the 4th-dimension values of every voxel.
 
-    For each voxel the index of the contrast with the largest
-    z-score is returned. Two types of masked values are handled:
-
-    - *Below threshold*: values equal to ``thresh_val`` (NaN by
-      default). Excluded from the argmax per contrast independently.
-    - *Outside ROI*: voxels identified by ``roi_mask`` or by
-      values equal to ``outside_val``. Must be consistent across
-      all contrasts at each voxel.
+    ``func`` is called once per voxel inside the mask with a 1D array of
+    that voxel's values (e.g. one per contrast) and must return a
+    scalar. Voxels outside the mask are set to ``0``.
 
     Parameters
     ----------
     img : path-like or nib.Nifti1Image
-        4D image of z-scores. The 4th dimension indexes contrasts.
-    roi_mask : path-like or nib.Nifti1Image, optional
-        3D binary mask. Voxels where the mask is zero are set to
-        NaN in the output. If ``None``, the ROI is inferred from
-        ``outside_val`` when it differs from ``thresh_val``; if
-        they are indistinguishable, all masked voxels are treated
-        as below threshold with no inconsistency check.
-    thresh_val : float, optional
-        Sentinel value indicating a below-threshold contrast.
-        NaN by default (NaN-aware comparison is used).
-    outside_val : float, optional
-        Sentinel value indicating an outside-ROI voxel.
-        NaN by default. May equal ``thresh_val``.
-    no_result_idx : int, optional
-        Value written to voxels where all contrasts are below
-        threshold. Default is ``-1``.
-    inconsistent_roi : {'raise', 'warn'}, optional
-        Action taken when the outside-ROI masking is inconsistent
-        across contrasts at any voxel. Default is ``'raise'``.
+        4D input image.
+    func : callable
+        Function mapping a 1D array to a scalar, e.g. :func:`wta`.
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask. Resampled to ``img`` if needed. Default is to use
+        all voxels.
+    meta : dict, optional
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
+    output_path : path-like or None, optional
+        Path at which to save the result. If ``None`` a default path is
+        derived from the filename of ``img`` and ``suffix`` (nothing is
+        saved if ``img`` has no filename). Pass ``False`` to suppress
+        saving.
+    suffix : str, optional
+        Suffix appended to the filename when generating a default output
+        path. Default is ``'apply'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    **func_kwargs
+        Keyword arguments passed to ``func``.
 
     Returns
     -------
-    argmax_img : nib.Nifti1Image
-        3D image of contrast indices (float32). NaN where outside
-        the ROI; ``no_result_idx`` where all contrasts are masked.
+    result_img : nib.Nifti1Image
+        3D float32 image of ``func`` results.
     meta : dict
-        Metadata including the parameters used.
+        Sidecar of the result.
 
     Raises
     ------
     ValueError
         If ``img`` is not 4D.
-    ValueError
-        If ``inconsistent_roi='raise'`` and the outside-ROI
-        masking is inconsistent across contrasts.
     """
-    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
-
-    if img.ndim != 4:
-        raise ValueError(f'img must be 4D, got {img.ndim}D.')
-
-    data = img.get_fdata()
-    n_contrasts = data.shape[-1]
-
-    thresh_is_nan = bool(np.isnan(below_thresh_val))
-    outside_is_nan = bool(np.isnan(outside_roi_val))
-    # Are thresholded values and outside-ROI values indistinguishable?
-    vals_same = (thresh_is_nan and outside_is_nan) or (
-        not thresh_is_nan and not outside_is_nan
-        and below_thresh_val == outside_roi_val
-    )
-
-    below_thresh = np.isnan(data) if thresh_is_nan else (data == below_thresh_val)
-    outside_arr = np.isnan(data) if outside_is_nan else (data == outside_roi_val)
-    not_valid = below_thresh | outside_arr
-
-    if not vals_same:
-        # Infer ROI from outside_val (distinguishable from thresh_val).
-        outside_count = outside_arr.sum(axis=-1)
-        # Since these are numpy.arrays we cannot use 
-        # ``0 < outside_count < n_contrast``.
-        partially_outside = (0 < outside_count) & (outside_count < n_contrasts)
-        if np.any(partially_outside):
-            n = int(np.sum(partially_outside))
-            msg = (
-                f'{n} voxel(s) have outside-ROI values in some '
-                f'but not all contrasts — the contrast images may '
-                f'not have been masked identically.'
-            )
-            if inconsistent_roi == 'raise':
-                raise ValueError(msg)
-            else:
-                logger.warning(msg)
-        # Mark voxels where not all contrasts are inside the ROI as
-        # outside the ROI.
-        in_roi = ~np.all(outside_arr, axis=-1)
-    else:
-        # If below_thresh_val and outside_roi_val are indistinguishable
-        # use all values without inferring what is inside/outside the
-        # ROI.
-        in_roi = np.ones(data.shape[:3], dtype=bool)
-
-    result = np.full(data.shape[:3], 0.0, dtype=np.float32)
-
-    # All voxels that are within the ROI but have all contrasts below
-    # threshold get a special value of `no_result_idx`.
-    all_non_valid = np.all(not_valid, axis=-1)
-    result[in_roi & all_non_valid] = no_result_idx
-
-    some_valid_in_roi = in_roi & ~all_non_valid
-    if np.any(some_valid_in_roi):
-        # Use -np.inf so that argmax never selects it by accident.
-        data_for_argmax = np.where(not_valid, -np.inf, data)
-        # 0 is reserved for outside of ROI/Background.
-        argmax_vals = np.argmax(data_for_argmax, axis=-1) + 1
-        result[some_valid_in_roi] = argmax_vals[some_valid_in_roi]
-
-    out_img = nib.Nifti1Image(result, affine=img.affine)
-
-    if output_path is None:
-        if img.get_filename() is None:
-            logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
-            output_path = False
-        else:
-            output_path = _get_output_path(img, suffix=suffix)
-
-    meta = provenance.record_step(
-        'analysis.argmax_contrast',
-        inputs={'img': img_input},
-        parameters={
-            'below_thresh_val': below_thresh_val,
-            'outside_roi_val': outside_roi_val,
-            'no_result_idx': no_result_idx,
-            'inconsistent_roi': inconsistent_roi
-        },
-        output_path=output_path
-    )
-
-    if output_path:
-        io_utils.save_image(out_img, output_path, meta=meta)
-
-    return out_img, meta
-
-
-def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
-    
     img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
     if img.ndim != 4:
         raise ValueError(f'img must be 4D, got {img.ndim}D.')
@@ -955,7 +897,7 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
             logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
             output_path = False
         else:
-            output_path = _get_output_path(img, suffix=suffix)
+            output_path = io_utils.get_output_path(img, suffix=suffix)
 
     meta = provenance.record_step(
         'analysis.apply_over_time',
@@ -1021,13 +963,12 @@ def concat_images(imgs, metas=None, labels=None, output_path=None):
 
 def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, only_positive=True):
     """
-    Winner-take-all function to be applied with `apply_over_time`.
+    Winner-take-all function to be applied with :func:`apply_over_time`.
 
-    For each voxel, the index of the maximum value is returned. Voxels
-    where all values are equal to `below_thresh_val` (e.g. NaN) get
-    `no_result_idx`. Voxels where all values are equal to `outside_val`
-    get 0. If `below_thresh_val` and `outside_val` are indistinguishable,
-    all masked voxels get `no_result_idx`.
+    Returns the 1-based index of the largest valid value, so that ``0``
+    can be used for outside the ROI. A value is valid if it is neither
+    ``outside_val`` nor ``below_thresh_val`` and, if ``only_positive``,
+    is not negative.
 
     Parameters
     ----------
@@ -1038,9 +979,22 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
         default (NaN-aware comparison is used).
     outside_val : float, optional
         Sentinel value indicating an outside-ROI voxel. NaN by default.
-        May equal `below_thresh_val`.
+        If both sentinels are NaN they cannot be told apart and all NaNs
+        are treated as below threshold.
     no_result_idx : int, optional
-        Value returned for voxels where all contrasts are below threshold. Default is `-1`.
+        Value returned when the voxel is inside the ROI but has no valid
+        value. Default is ``-1``.
+    only_positive : bool, optional
+        If ``True``, negative values are not considered valid. Default
+        is ``True``.
+
+    Returns
+    -------
+    int
+        ``0`` if all values are ``outside_val`` or the valid values sum
+        to zero (indicates that they are all background voxels),
+        ``no_result_idx`` if no value is valid, otherwise the
+        index of the largest valid value plus one.
     """
     data = np.asarray(data)
 
@@ -1076,18 +1030,18 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
 
 def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, suffix='segmentation', load_errors='raise', color_palette=None):
     """
-    Save an image as a segmentation file.
+    Save an image as an integer segmentation.
 
-    The image is saved in the same format as the input but with a filename
-    suffix (default ``'segmentation'``) that can be used to identify it as
-    a segmentation. The metadata is updated with a 'type' field set to
-    'segmentation' and any additional parameters passed via kwargs.
+    The data are cast to int16 and resampled with nearest-neighbour
+    interpolation onto ``template``. If ``labels`` are given they are
+    stored in the sidecar and an ITK-SNAP label description file
+    (``<output>_labels.txt``) is written next to the image.
 
     Parameters
     ----------
     img : path-like or nib.Nifti1Image
-        Image to save as a segmentation. If a path is given, the image is
-        loaded from disk.
+        Image to save as a segmentation. If a path is given, the image
+        is loaded from disk.
     meta : dict, optional
         Sidecar of ``img``. Required to keep the provenance of in-memory
         images.
@@ -1095,17 +1049,30 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         Image defining the output grid. Defaults to the 1mm MNI152
         template from nilearn. Pass ``False`` to keep the input grid.
     labels : dict or list, optional
-        Label names, saved in the sidecar and as an ITK-SNAP label
-        description file.
+        Label names, either a mapping of label value to name or a list
+        indexed by label value.
     output_path : path-like or None, optional
         Path at which to save the segmentation image. If ``None`` a
-        default path is derived from the input image path and ``suffix``.
-        Pass ``False`` to suppress saving.
+        default path is derived from the filename of ``img`` and
+        ``suffix`` (nothing is saved if ``img`` has no filename). Pass
+        ``False`` to suppress saving.
     suffix : str, optional
         Suffix appended to the filename when generating a default output
         path. Default is ``'segmentation'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
+    color_palette : dict or callable, optional
+        Colours for the label description file, as a mapping of label
+        name to colour or a function of the label name. Colours are hex
+        strings or RGBA tuples in 0-1. Labels without a colour get one
+        from a default palette.
+
+    Returns
+    -------
+    out_img : nib.Nifti1Image
+        The segmentation image.
+    meta : dict
+        Sidecar of the segmentation.
     """
     img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
 
@@ -1144,11 +1111,11 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
             logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
             output_path = False
         else:
-            output_path = _get_output_path(img, suffix=suffix)
+            output_path = io_utils.get_output_path(img, suffix=suffix)
 
     labels_output_path = None
     if labels is not None and output_path:
-        labels_output_path = _get_output_path(output_path, suffix='labels', extension='.txt')
+        labels_output_path = io_utils.get_output_path(output_path, suffix='labels', extension='.txt')
 
     meta = provenance.record_step(
         'analysis.save_as_segmentation',
@@ -1168,6 +1135,27 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
 
 
 def _save_itksnap_label_description(labels, output_path=None, color_palette=None):
+    """
+    Write an ITK-SNAP label description file.
+
+    Parameters
+    ----------
+    labels : dict or list
+        Mapping of label value to name (or to ``(name, colour)``), or a
+        list of names indexed by label value.
+    output_path : path-like, optional
+        Where to write the file. If not given, nothing is written.
+    color_palette : dict or callable, optional
+        Colours for labels given without one, as a mapping of label name
+        to colour or a function of the label name. Colours are hex
+        strings or RGBA tuples in 0-1. Labels without a colour get one
+        from a default palette.
+
+    Returns
+    -------
+    dict
+        Mapping of label value to ``(name, colour)``.
+    """
     def _get_color(label):
         if color_palette is not None and label in color_palette:
             return color_palette[label]
@@ -1249,46 +1237,50 @@ def _remove_zeros(surf_img):
 
 def project_image(img_to_project, contrast=None, meta=None, output_path=None, mesh='pial', standard_surface='fsaverage6', verbose=True, load_errors='raise', inner_mesh='white_matter', radius=4, n_samples=20, mesh_meta=None, inner_mesh_meta=None, **kwargs):
     """
-    Project a volumetric image onto a standard surface.
+    Project a volumetric image onto a surface.
+
+    Zeros in the projected data are replaced with NaN so they are
+    transparent in plots.
 
     Parameters
     ----------
     img_to_project : path-like
         Path to the volumetric image to project. May be 3D or 4D.
-    contrast : str
-        Name of the contrast to project. Used to select a volume from a
-        4D image and to name the output file.
+    contrast : str, optional
+        Label of the volume to project. Required when ``img_to_project``
+        is 4D; also used to name the default output file.
     meta : dict, optional
         Sidecar of ``img_to_project``. Loaded from disk if not given.
     output_path : path-like or None, optional
-        Path at which to save the surface image. If ``None`` the file is
-        saved in a ``surf/`` folder adjacent to the parent of
-        ``img_to_project``. Pass ``False`` to suppress saving.
+        Path at which to save the surface image (see
+        ``io_utils.save_surface``). If ``None`` the file is saved in a
+        ``surf/`` folder adjacent to the parent of ``img_to_project``.
+        Pass ``False`` to suppress saving.
+    mesh : str or nilearn.surface.PolyMesh, optional
+        Outer mesh. A string selects a mesh of the ``standard_surface``
+        fsaverage (e.g. ``'pial'``). Default is ``'pial'``.
     standard_surface : str, optional
-        fsaverage mesh resolution. Default is ``'fsaverage6'``.
-    mesh : str, optional
-        Surface mesh to use (e.g. ``'inflated'``, ``'pial'``). Default is
-        ``'pial'``.
+        fsaverage resolution used when ``mesh`` or ``inner_mesh`` is a
+        string. Default is ``'fsaverage6'``.
     verbose : bool, optional
-        If ``True``, suppress nilearn's printed output. Default is
+        If ``False``, suppress nilearn's printed output. Default is
         ``True``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
-    inner_mesh : str, optional
-        Inner mesh used for volume-to-surface projection. Default is
+    inner_mesh : str or nilearn.surface.PolyMesh, optional
+        Inner mesh used for depth sampling, as for ``mesh``. Default is
         ``'white_matter'``.
     radius : float, optional
         Radius (mm) for sampling around each surface vertex. Default is
         ``4``.
     n_samples : int, optional
-        Number of samples along the normal for projection. Default is
-        ``20``.
+        Number of samples per vertex. Default is ``20``.
     mesh_meta, inner_mesh_meta : dict, optional
         Sidecars of ``mesh`` and ``inner_mesh`` when they are in-memory
         meshes (e.g. from :func:`transform_surface_to_mni`).
     **kwargs
         Additional keyword arguments passed to
-        ``SurfaceImage.from_volume``.
+        ``SurfaceImage.from_volume`` (e.g. ``interpolation``, ``kind``).
 
     Returns
     -------
@@ -1362,10 +1354,24 @@ def _surface_inputs(surf_file, meta=None):
     """
     Load surface data for plotting and describe it for provenance.
 
-    ``surf_file`` is either a path saved by ``io_utils.save_surface`` or
-    a dict with ``'left'``/``'right'`` keys holding paths to per-hemi
-    GIFTI files or arrays. For in-memory arrays, ``meta`` may be a dict
-    with the same keys holding the sidecar of each hemisphere.
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Base path of a surface image saved with
+        ``io_utils.save_surface``, or a dict with ``'left'``/``'right'``
+        keys holding paths to per-hemi GIFTI files or arrays.
+    meta : dict, optional
+        Sidecar of ``surf_file``, or for a dict input either one sidecar
+        for both hemispheres or a dict of per-hemi sidecars. Loaded from
+        disk for paths if not given.
+
+    Returns
+    -------
+    surface : SurfaceImage or dict
+        The loaded surface image for a path input, or a dict of per-hemi
+        arrays for a dict input.
+    inputs : dict
+        Inputs for ``provenance.record_step``.
     """
     if isinstance(surf_file, (Path, str)):
         surface_image, surf_meta = io_utils.load_surface(surf_file)
@@ -1387,12 +1393,16 @@ def _surface_inputs(surf_file, meta=None):
 
 def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
     """
-    Plot a surface image. See :func:`make_plot`.
+    Plot a surface image without saving it.
+
+    Takes the same arguments as :func:`make_plot` except
+    ``output_path``.
 
     Returns
     -------
     display
-        The nilearn display object.
+        The nilearn display object (matplotlib figure or plotly
+        display).
     inputs : dict
         Inputs for ``provenance.record_step``.
     parameters : dict
@@ -1482,7 +1492,20 @@ def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inf
 
 
 def _plot_contrast(inputs):
-    """Contrast of the projected image a plot was made from, if known."""
+    """
+    Return the contrast of the projected image a plot is made from.
+
+    Parameters
+    ----------
+    inputs : dict
+        Inputs as returned by :func:`_surface_inputs`.
+
+    Returns
+    -------
+    str
+        The ``contrast`` parameter of the step that produced the
+        surface, or ``'unknown_contrast'``.
+    """
     surf_input = inputs.get('surface') or inputs.get('left') or (None, None)
     return provenance.last_step(surf_input[1]).get('parameters', {}).get('contrast') or 'unknown_contrast'
 
@@ -1494,33 +1517,46 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
     Parameters
     ----------
     surf_file : path-like or dict
-        Path to a surface image file created by :func:`project_img` or
-        saved using ``io_utils.save_surface``, or a dict with
+        Base path of a surface image created by :func:`project_image`
+        (or saved with ``io_utils.save_surface``), or a dict with
         ``'left'``/``'right'`` keys holding per-hemi GIFTI paths or
         arrays.
     meta : dict, optional
         Sidecar of ``surf_file`` (or a dict of per-hemi sidecars).
         Loaded from disk for paths if not given.
-    mesh_meta : dict, optional
-        Sidecar of ``mesh`` when it is an in-memory mesh.
     output_path : path-like or None, optional
         Path at which to save the plot. If ``None`` the file is saved in
         a ``plots/`` folder adjacent to the parent of ``surf_file``.
         Pass ``False`` to suppress saving.
     standard_surface : str, optional
-        fsaverage mesh resolution. Default is ``'fsaverage6'``.
-    surface_type : str, optional
-        Surface type. Default is ``'inflated'``.
+        fsaverage resolution used when ``mesh`` is a string. Default is
+        ``'fsaverage6'``.
+    mesh : str or nilearn.surface.PolyMesh, optional
+        Mesh to plot on. A string selects a mesh of the
+        ``standard_surface`` fsaverage, which also provides the sulcal
+        background. Default is ``'inflated'``.
     verbose : bool, optional
-        If ``True``, suppress nilearn's printed output. Default is
+        If ``False``, suppress nilearn's printed output. Default is
         ``False``.
+    colorbar_labels : list of str, optional
+        Tick labels for the integer values ``vmin``..``vmax``. Defaults
+        to the values themselves.
+    cmap : str, list or matplotlib colormap, optional
+        Colormap. A list of colours is turned into a ``ListedColormap``.
+    cmap_bg_first : bool, optional
+        If ``True`` and ``cmap`` is a list, its first colour is the
+        background and is dropped from the plot and colorbar. Default is
+        ``False``.
+    mesh_meta : dict, optional
+        Sidecar of ``mesh`` when it is an in-memory mesh.
     **kwargs
         Additional keyword arguments passed to
-        ``nilearn.plotting.plot_surf_stat_map``.
+        ``nilearn.plotting.plot_surf_stat_map``. ``vmin``/``vmax``
+        default to the data range across both hemispheres.
 
     Returns
     -------
-    display : nilearn.plotting.displays.SurfaceAxes
+    display : matplotlib.figure.Figure or plotly display
         The nilearn display object.
     meta : dict
         Sidecar of the plot.
@@ -1548,10 +1584,59 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
     return display, meta
 
 
-def make_html2(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, atlas=None, **kwargs):
+def make_html(*args, legacy=False, **kwargs):
     """
-    Create an interactive (plotly) HTML surface plot. Takes the same
-    arguments as :func:`make_plot`.
+    Create an interactive HTML surface plot.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :func:`_surf_plot_html` or :func:`_view_surf_html`
+        depending on ``legacy``.
+
+    legacy : bool, optional
+        If ``True``, use the legacy nilearn viewer (``view_surf``)
+        instead of the new plotly-based viewer. Default is ``False``.
+
+    Returns
+    -------
+    display
+        The interactive display object.
+    meta : dict
+        Sidecar of the HTML file.
+    """
+    if legacy:
+        return _view_surf_html(*args, **kwargs)
+    else:
+        return _surf_plot_html(*args, **kwargs)
+
+
+def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, atlas=None, **kwargs):
+    """
+    Create an interactive (plotly) HTML surface plot.
+
+    Parameters
+    ----------
+    surf_file, meta, standard_surface, mesh, verbose
+        See :func:`make_plot`.
+    output_path : path-like or None, optional
+        Path at which to save the HTML file. If ``None`` the file is
+        saved in an ``htmls/`` folder adjacent to the parent of
+        ``surf_file``. Pass ``False`` to suppress saving.
+    atlas : optional
+        Unused.
+    **kwargs
+        Other arguments of :func:`make_plot` (e.g. ``cmap``,
+        ``colorbar_labels``, ``mesh_meta``) and of
+        ``nilearn.plotting.plot_surf_stat_map``. ``engine`` is always
+        ``'plotly'``.
+
+    Returns
+    -------
+    display
+        The nilearn plotly display object.
+    meta : dict
+        Sidecar of the HTML file.
     """
     display, inputs, parameters = _plot_surface(
         surf_file,
@@ -1576,9 +1661,10 @@ def make_html2(surf_file, meta=None, output_path=None, standard_surface='fsavera
     return display, meta
 
 
-def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surface='fsaverage6', surface_type='inflated', verbose=False, **kwargs):
+def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standard_surface='fsaverage6', surface_type='inflated', verbose=False, **kwargs):
     """
-    Create an interactive HTML surface viewer.
+    Create an interactive HTML surface viewer with
+    ``nilearn.plotting.view_surf``.
 
     The colour scale is set symmetrically around zero based on the data
     range across both hemispheres, unless ``vmin``/``vmax`` are supplied
@@ -1586,8 +1672,10 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
 
     Parameters
     ----------
-    surf_file : path-like
-        Path to a surface image file created by :func:`project_img`.
+    surf_file : path-like or dict
+        Base path of a surface image created by :func:`project_image`,
+        or a dict with ``'left'``/``'right'`` keys, see
+        :func:`make_plot`.
     meta : dict, optional
         Sidecar of ``surf_file``. Loaded from disk if not given.
     output_path : path-like or None, optional
@@ -1595,20 +1683,18 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
         saved in an ``htmls/`` folder adjacent to the parent of
         ``surf_file``. Pass ``False`` to suppress saving.
     hemi : {'left', 'right'}, optional
-        Hemisphere to display. Default is ``'left'``. The interactive
-        viewer does not support plotting both hemispheres at once, so
-        only one can be selected.
+        Hemisphere to display. Default is ``'left'``. The viewer does
+        not support plotting both hemispheres at once.
     standard_surface : str, optional
-        fsaverage mesh resolution. Default is ``'fsaverage6'``.
+        fsaverage resolution. Default is ``'fsaverage6'``.
     surface_type : str, optional
-        Surface type. Default is ``'inflated'``.
+        fsaverage mesh to plot on. Default is ``'inflated'``.
     verbose : bool, optional
-        If ``True``, suppress nilearn's printed output. Default is
+        If ``False``, suppress nilearn's printed output. Default is
         ``False``.
     **kwargs
         Additional keyword arguments passed to
-        ``nilearn.plotting.view_surf``. ``vmin`` and ``vmax`` are set
-        automatically if not provided.
+        ``nilearn.plotting.view_surf``.
 
     Returns
     -------
@@ -1669,6 +1755,34 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
 
 
 def _transform_surface(coords, xfm_t1w_mni, xfm_fsnative_t1w=None, use_temp=True):
+    """
+    Warp surface vertex coordinates with
+    ``antsApplyTransformsToPoints``.
+
+    Coordinates are converted from RAS to the LPS convention used by
+    ANTs and back. ANTs maps points with the inverse of the image
+    transform, so pass the transform that goes *from* the target space
+    (e.g. ``from-MNI..._to-T1w``) to move points into the target space.
+    ANTs is loaded with ``ml load ANTS_MODULE`` in a login shell.
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        (n_vertices, 3) RAS coordinates.
+    xfm_t1w_mni : path-like
+        ANTs transform applied to the points.
+    xfm_fsnative_t1w : path-like, optional
+        Additional ANTs transform, applied after ``xfm_t1w_mni`` in the
+        ANTs ``-t`` order.
+    use_temp : bool, optional
+        Write the intermediate CSV files to a temporary directory under
+        ``$TMPDIR``. Default is ``True``.
+
+    Returns
+    -------
+    np.ndarray
+        (n_vertices, 3) transformed RAS coordinates.
+    """
     tmpdir = os.getenv('TMPDIR', '/tmp')
     ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
     with ctx as tmpdir:
@@ -1707,6 +1821,33 @@ def _transform_surface(coords, xfm_t1w_mni, xfm_fsnative_t1w=None, use_temp=True
 
 
 def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1w=None, output_path=None, meta=None):
+    """
+    Warp left and right subject surfaces into MNI space.
+
+    Parameters
+    ----------
+    left_surf, right_surf : path-like
+        Subject surface GIFTI files (e.g. fMRIPrep
+        ``hemi-L_pial.surf.gii``).
+    xfm_t1w_mni : path-like
+        ANTs transform, see :func:`_transform_surface` for the direction
+        (for fMRIPrep, the ``from-MNI..._to-T1w`` transform).
+    xfm_fsnative_t1w : path-like, optional
+        Additional ANTs transform, e.g. fsnative to T1w.
+    output_path : path-like, optional
+        Path at which to save the mesh. nilearn writes one file per
+        hemisphere (``_hemi-L``/``_hemi-R``); the sidecar is written
+        next to ``output_path``. Not saved if not given.
+    meta : optional
+        Unused.
+
+    Returns
+    -------
+    surf_polymesh : nilearn.surface.PolyMesh
+        The surfaces in MNI space.
+    meta : dict
+        Sidecar of the mesh.
+    """
     surf_mesh = {}
     for hemi in ('left', 'right'):
         surf = nib.load(left_surf if hemi == 'left' else right_surf)
@@ -1749,32 +1890,34 @@ def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1
 
 def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
     """
-    Resample a surface texture to fsaverage using wb_command.
-    fsavg_spheres: dict with 'L' and 'R' paths to fsaverage sphere GIFTI files
-    (converted from FreeSurfer binary using mris_convert).
+    Resample per-vertex data to fsaverage with
+    ``wb_command -metric-resample`` (barycentric, ``-largest``).
+
+    Connectome Workbench is loaded with ``ml load WB_MODULE`` in a login
+    shell.
+
+    Parameters
+    ----------
+    data_path : path-like
+        Single-hemisphere GIFTI data file on the subject's surface.
+    sphere_path : path-like
+        Subject's sphere registered to fsaverage for the same hemisphere
+        (e.g. fMRIPrep ``space-fsaverage_desc-reg_sphere.surf.gii``).
+    fsavg_sphere : path-like
+        Gzipped fsaverage sphere GIFTI for the same hemisphere, as
+        returned by ``nilearn.datasets.fetch_surf_fsaverage``.
+    use_temp : bool, optional
+        Write intermediate files to a temporary directory under
+        ``$TMPDIR``. Default is ``True``.
+
+    Returns
+    -------
+    np.ndarray
+        Per-vertex data on the fsaverage sphere.
     """
-    # fs_hemi = 'L' if hemi == 'left' else 'R'
-    # anat_dir = Path(fmriprep_dir) / sub / ses / 'anat'
-
-    # # Save texture as GIFTI
-    # texture_path = f'/tmp/{sub}_{ses}_{fs_hemi}_texture.func.gii'
-    # darray = nib.gifti.GiftiDataArray(
-    #     texture.astype(np.float32),
-    #     intent=nib.nifti1.intent_codes['NIFTI_INTENT_NONE'],
-    # )
-    # nib.gifti.GiftiImage(darrays=[darray]).to_filename(texture_path)
-
-    # subject_sphere = str(anat_dir / f'{sub}_{ses}_hemi-{fs_hemi}_space-fsaverage_desc-reg_sphere.surf.gii')
-
     tmpdir = os.getenv('TMPDIR', '/tmp')
     ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
     with ctx as tmpdir:
-
-        # fsavg_out_path = f'{tmpdir}/fsaverage_sphere_reg.surf.gii'
-        # cmd = f'ml load structural_imaging/freesurfer/7.4.1 && mris_convert {fsavg_sphere} {fsavg_out_path}'
-        # subprocess.run(['/bin/bash', '-lc', cmd], check=True)
-        # logger.info(f'Converted {fsavg_sphere} sphere to {fsavg_out_path}')
-
         fsavg_sphere = io_utils.unpack_gifti(fsavg_sphere, output_path=Path(tmpdir) / Path(fsavg_sphere).name.replace('.gz', ''))
 
         out_path = Path(tmpdir) / 'resampled.func.gii'
@@ -1798,6 +1941,38 @@ def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
 
 
 def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surface='fsaverage6', output_path=None, meta=None, verbose=True):
+    """
+    Resample one hemisphere of a surface image to fsaverage.
+
+    Parameters
+    ----------
+    surf_file : path-like
+        Base path of a surface image saved with
+        ``io_utils.save_surface`` (e.g. by :func:`project_image`). The
+        data file of ``hemi`` is resampled.
+    surf_sphere : path-like
+        Subject's sphere registered to fsaverage for ``hemi``.
+    hemi : {'left', 'right'}
+        Hemisphere to resample.
+    standard_surface : str, optional
+        fsaverage resolution to resample to. Default is
+        ``'fsaverage6'``.
+    output_path : path-like, optional
+        Path at which to save the resampled data as GIFTI. Not saved if
+        not given.
+    meta : dict, optional
+        Sidecar of ``surf_file``. Loaded from disk if not given.
+    verbose : bool, optional
+        If ``False``, suppress nilearn's printed output. Default is
+        ``True``.
+
+    Returns
+    -------
+    surf_fsavg : np.ndarray
+        Per-vertex data on fsaverage.
+    meta : dict
+        Sidecar of the resampled data.
+    """
     with io_utils.optional_silent_print(verbose):
         fsaverage_surf = nilearn.datasets.fetch_surf_fsaverage(mesh=standard_surface)
         fsavg_sphere = fsaverage_surf[f'sphere_{hemi}']
