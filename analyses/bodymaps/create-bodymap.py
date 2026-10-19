@@ -10,6 +10,7 @@ import argparse
 
 import io_utils
 import analysis
+import provenance
 
 from matplotlib.colors import ListedColormap
 
@@ -47,10 +48,9 @@ def create_bodymap(sub, ses, config, base_dir):
     )
 
     logging.info('Thresholding image')
-    _, thresh_meta, thresh_dict = analysis.threshold_images(
+    thresh_img, thresh_meta, _ = analysis.threshold_images(
         file,
         corr_p_val_file,
-        meta=None,
         alpha=alpha,
         output_path=False,
         load_errors='raise',
@@ -59,10 +59,8 @@ def create_bodymap(sub, ses, config, base_dir):
     )
 
     logging.info('Extracting ROIs')
-    roi_imgs = []
+    roi_imgs, roi_metas = [], []
     for contr in contrasts:
-        img = thresh_dict[contr]
-
         if contr.startswith('LP'):
             contr_regions = roi_regions['both']
         elif contr.startswith('L'):
@@ -72,8 +70,9 @@ def create_bodymap(sub, ses, config, base_dir):
             contr_regions = roi_regions['lh']
         
         roi_img, roi_meta = analysis.roi_single_image(
-            img,
+            thresh_img,
             meta=thresh_meta,
+            contrast_idx=thresh_meta['volume_labels'].index(contr),
             regions=contr_regions,
             atlas=atlas_file,
             output_path=False,
@@ -81,20 +80,18 @@ def create_bodymap(sub, ses, config, base_dir):
         )
 
         roi_imgs.append(roi_img)
+        roi_metas.append(roi_meta)
 
     logging.info('Concatenating images')
-    imgs = nib.concat_images(roi_imgs)
-    if imgs.shape[-1] != len(contrasts):
-        raise ValueError(f'Images have not been concatenated along the 4th dimension. The concatenated image shape: {imgs.shape}')
     roid_file = base_dir / roid_tpl.format(sub=sub, ses=ses)
-    io_utils.save_image(imgs, roid_file, meta=roi_meta)
+    imgs, imgs_meta = analysis.concat_images(roi_imgs, metas=roi_metas, labels=contrasts, output_path=roid_file)
 
     logging.info('Applying WTA')
     wta_file = base_dir / wta_tpl.format(sub=sub, ses=ses)
     wta_img, wta_meta = analysis.apply_over_time(
         img=imgs,
         func=analysis.wta,
-        meta={'source_meta': roi_meta},
+        meta=imgs_meta,
         outside_val=-999.0,
         below_thresh_val=999,
         no_result_idx=no_result_idx,
@@ -110,7 +107,7 @@ def create_bodymap(sub, ses, config, base_dir):
     seg_cmap = {lab: cmap[idx] for idx, lab in labels.items()}
     seg_img, seg_meta = analysis.save_as_segmentation(
         img=wta_img,
-        meta={'source_meta': wta_meta},
+        meta=wta_meta,
         labels=labels,
         output_path=base_dir / segment_tpl.format(sub=sub, ses=ses),
         template=base_dir / t1_tpl.format(sub=sub, ses=ses),
@@ -119,6 +116,7 @@ def create_bodymap(sub, ses, config, base_dir):
 
     logging.info('Transforming surfaces to MNI')
     xfm_t1w_mni = base_dir / xfm_t1w_mni_tpl.format(sub=sub, ses=ses)
+    mni_meshes = {}
     for surf in ('pial', 'white', 'inflated'):
         surf_files = {}
         for hemi in ('left', 'right'):
@@ -132,33 +130,31 @@ def create_bodymap(sub, ses, config, base_dir):
             surf_files[f'{hemi}_surf'] = s_file
 
         output_path = base_dir / mni_surf_tpl.format(sub=sub, ses=ses, surf=surf)
-        polymesh, _ = analysis.transform_surface_to_mni(xfm_t1w_mni=xfm_t1w_mni, output_path=output_path, **surf_files)
-        if surf == 'pial':
-            pial_polymesh = polymesh
-        elif surf == 'white':
-            white_polymesh = polymesh
+        mni_meshes[surf] = analysis.transform_surface_to_mni(xfm_t1w_mni=xfm_t1w_mni, output_path=output_path, **surf_files)
+    pial_polymesh, pial_meta = mni_meshes['pial']
+    white_polymesh, white_meta = mni_meshes['white']
 
     logging.info('Projecting image')
     projected_file = base_dir / projected_tpl.format(sub=sub, ses=ses)
     proj_img, proj_meta = analysis.project_image(
         wta_file,
-        meta=None,
         output_path=projected_file,
         interpolation='nearest_most_frequent',
         kind='depth',
         n_samples=20,
         mesh=pial_polymesh,
         inner_mesh=white_polymesh,
+        mesh_meta=pial_meta,
+        inner_mesh_meta=white_meta,
         standard_surface='MNI152NLin2009cAsym',
     )
 
     logging.info('Transforming projected image to fsaverage')
-    resampled_data = {}
+    fsavg_files = {}
     for hemi in ['left', 'right']:
-        # data_file = io_utils._get_surface_paths(projected_file, hemi='L' if hemi == 'left' else 'R', data_type='data')
         sphere_file = base_dir / sphere_reg_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
         output_path = base_dir / fsavg_surf_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
-        fsavg_surf, surf_meta = analysis.transform_surface_to_fsaverage(
+        analysis.transform_surface_to_fsaverage(
             projected_file,
             sphere_file,
             hemi=hemi,
@@ -167,7 +163,7 @@ def create_bodymap(sub, ses, config, base_dir):
             meta=proj_meta
         )
 
-        resampled_data[hemi] = fsavg_surf
+        fsavg_files[hemi] = output_path
 
     logging.info('Saving MNI surf as PNG')
     plot_labels = contrasts + ['Rest']
@@ -180,6 +176,7 @@ def create_bodymap(sub, ses, config, base_dir):
         symmetric_cbar=False,
         colorbar=True,
         mesh=pial_polymesh,
+        mesh_meta=pial_meta,
         colorbar_labels=plot_labels,
         view='dorsal',
         cmap_bg_first=True,
@@ -192,8 +189,7 @@ def create_bodymap(sub, ses, config, base_dir):
     logging.info('Saving fsaverage surf as PNG')
     plot_labels = contrasts + ['Rest']
     plot, meta = analysis.make_plot(
-        resampled_data,
-        meta=surf_meta,
+        fsavg_files,
         output_path=base_dir / plot_fsavg_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
@@ -212,8 +208,7 @@ def create_bodymap(sub, ses, config, base_dir):
 
     logging.info('Saving fsaverage surf as HTML')
     display, meta = analysis.make_html2(
-        resampled_data,
-        meta=surf_meta,
+        fsavg_files,
         output_path=base_dir / html_tpl.format(sub=sub, ses=ses),
         hemi='both',
         cmap=cmap,
@@ -233,14 +228,17 @@ def create_bodymap(sub, ses, config, base_dir):
     shutil.copyfile(base_dir / f'fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_T1w.nii.gz', f'./{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_T1w.nii.gz')
 
     logging.info('Resampling T1')
-    out_img = nilearn.image.resample_to_img(
-        source_img=base_dir / t1_tpl.format(sub=sub, ses=ses),
-        target_img=wta_file,
-        interpolation='nearest',
-        force_resample=True,
-        copy_header=True,
+    t1_file = base_dir / t1_tpl.format(sub=sub, ses=ses)
+    resampled_t1_file = base_dir / resampled_t1_tpl.format(sub=sub, ses=ses)
+    resample_params = dict(interpolation='nearest', force_resample=True, copy_header=True)
+    out_img = nilearn.image.resample_to_img(source_img=t1_file, target_img=wta_file, **resample_params)
+    resampled_t1_meta = provenance.record_step(
+        'nilearn.image.resample_to_img',
+        inputs={'source_img': provenance.describe(t1_file), 'target_img': provenance.describe(wta_file)},
+        parameters=resample_params,
+        output_path=resampled_t1_file
     )
-    nib.save(out_img, base_dir / resampled_t1_tpl.format(sub=sub, ses=ses))
+    io_utils.save_image(out_img, resampled_t1_file, meta=resampled_t1_meta)
     
     logging.info(f'Done with {sub}/{ses}')
 

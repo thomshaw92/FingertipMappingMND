@@ -29,7 +29,32 @@ class PathEncoder(json.JSONEncoder):
         if isinstance(obj, Path):
             return str(obj)
         return super().default(obj)
-    
+
+
+def load_sidecar(path, errors='raise'):
+    """
+    Load the JSON sidecar of ``path``.
+
+    Returns ``None`` if the sidecar does not exist and ``errors`` is not
+    ``'raise'``.
+    """
+    json_filename = _get_sidecar_json(path)
+    if not json_filename.exists():
+        msg = f'JSON sidecar {json_filename} not found for {path}.'
+        if errors == 'raise':
+            raise FileNotFoundError(msg)
+        elif errors == 'warn':
+            logger.warning(msg)
+        return None
+    with open(json_filename, 'r') as json_sidecar:
+        return json.load(json_sidecar)
+
+
+def save_sidecar(path, meta):
+    """Save ``meta`` as the JSON sidecar of ``path``."""
+    with open(_get_sidecar_json(path), 'w') as json_sidecar:
+        json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
+
 
 @contextmanager
 def silent_print():
@@ -107,11 +132,7 @@ def load_image(img_path, load_img=True, load_meta=True, errors='raise'):
             img = nib.load(img_path)
 
         if load_meta:
-            json_filename = _get_sidecar_json(img_path)
-            if not json_filename.exists():
-                raise FileNotFoundError(f'JSON sidecar {json_filename} not found for {img_path}.')
-            with open(json_filename, 'r') as json_sidecar:
-                meta = json.load(json_sidecar)
+            meta = load_sidecar(img_path, errors='raise')
     except Exception as err:
         if errors == 'raise':
             raise err
@@ -145,10 +166,7 @@ def save_image(img, img_path, meta=None):
     if meta is None:
         meta = {}
 
-    json_filename = _get_sidecar_json(img_path)
-    with open(json_filename, 'w') as json_sidecar:
-        json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
-
+    save_sidecar(img_path, meta)
     nib.save(img, img_path)
 
 
@@ -162,9 +180,7 @@ def save_figure(fig, fig_path, meta=None, save_empty_sidecar=False, interactive=
         fig.savefig(fig_path, dpi=200, bbox_inches='tight')
 
     if save_empty_sidecar or meta:
-        json_filename = _get_sidecar_json(fig_path)
-        with open(json_filename, 'w') as json_sidecar:
-            json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
+        save_sidecar(fig_path, meta)
 
 
 def save_view(view, view_path, meta=None, save_empty_sidecar=False):
@@ -174,9 +190,7 @@ def save_view(view, view_path, meta=None, save_empty_sidecar=False):
     view.save_as_html(view_path)
 
     if save_empty_sidecar or meta:
-        json_filename = _get_sidecar_json(view_path)
-        with open(json_filename, 'w') as json_sidecar:
-            json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
+        save_sidecar(view_path, meta)
 
 
 def _get_surface_paths(path, hemi=None, data_type='mesh'):
@@ -208,9 +222,7 @@ def save_surface(surf_img, path, meta=None):
     data_path = _get_surface_paths(path, hemi=None, data_type='data')
     surf_img.data.to_filename(data_path)
 
-    json_filename = _get_sidecar_json(path)
-    with open(json_filename, 'w') as json_sidecar:
-        json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
+    save_sidecar(path, meta)
 
 
 def load_surface(path):
@@ -228,13 +240,7 @@ def load_surface(path):
 
     surf_image = nilearn.surface.SurfaceImage(mesh=mesh, data=data)
 
-    json_filename = _get_sidecar_json(path)
-    if not json_filename.exists():
-        logger.warning(f'JSON sidecar {json_filename} not found for {path}.')
-        meta = {}
-    else:
-        with open(json_filename, 'r') as json_sidecar:
-            meta = json.load(json_sidecar)
+    meta = load_sidecar(path, errors='warn') or {}
 
     return surf_image, meta
 
@@ -250,9 +256,7 @@ def save_gifti(data, path, meta=None):
 
     nib.gifti.GiftiImage(darrays=[darray]).to_filename(path)
 
-    json_filename = _get_sidecar_json(path)
-    with open(json_filename, 'w') as json_sidecar:
-        json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
+    save_sidecar(path, meta)
 
 
 def convert_to_sec(t):

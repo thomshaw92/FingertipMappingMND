@@ -20,8 +20,13 @@ import matplotlib.pyplot as plt
 import shlex
 
 import io_utils
+import provenance
 
 logger = logging.getLogger(__name__)
+
+# Lmod modules for the external tools (recorded in provenance).
+ANTS_MODULE = 'ants/2.6.0'
+WB_MODULE = 'connectomeworkbench/1.5.0'
 
 
 def _select_contrast_img(img, contrast_idx=None):
@@ -71,8 +76,9 @@ def _check_input_img(img, meta=None, load_errors='raise'):
         Image to check. If not already a NiftiImage, it will be loaded
         via ``io_utils.load_image``.
     meta : dict, optional
-        Existing metadata dict to update with any metadata loaded from
-        disk. Defaults to an empty dict.
+        Sidecar of ``img``. Required for in-memory images to keep their
+        provenance. If ``img`` is a path and ``meta`` is not given, the
+        sidecar is loaded from disk.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
 
@@ -80,17 +86,18 @@ def _check_input_img(img, meta=None, load_errors='raise'):
     -------
     img : nib.Nifti1Image
         The loaded image.
-    meta : dict
-        Updated metadata dict.
+    inp : tuple
+        ``(path, meta)`` describing the input for
+        ``provenance.record_step``.
     """
-    if meta is None:
-        meta = {}
-
     if not isinstance(img, nib.Nifti1Image):
-        img, orig_meta = io_utils.load_image(img, errors=load_errors)
-        meta.update(orig_meta or {})
+        path = img
+        img, disk_meta = io_utils.load_image(img, errors=load_errors)
+        if meta is None:
+            meta = disk_meta
+        return img, provenance.describe(path, meta)
 
-    return img, meta
+    return img, provenance.describe(img, meta)
 
 
 def _get_output_path(input_path, suffix, extension=None):
@@ -119,41 +126,6 @@ def _get_output_path(input_path, suffix, extension=None):
     return f'{input_path.parent}/{input_path.stem.replace(".nii", "")}_{suffix}{full_ext}'
 
 
-def _create_meta(meta, **kwargs):
-    """
-    Recursively build or update a metadata dictionary.
-
-    Values that are None are not included in the updated dictionary.
-    Dict values are merged recursively, allowing for nested metadata
-    structures.
-
-    Parameters
-    ----------
-    meta : dict or None
-        Existing metadata to update. If ``None``, a new empty dict is
-        created.
-    **kwargs
-        Key-value pairs to add. Dict values are merged recursively;
-        ``None`` values (and their keys) are ignored.
-
-    Returns
-    -------
-    dict
-        Updated metadata dictionary.
-    """
-    if meta is None:
-        meta = {}
-
-    meta = copy.deepcopy(meta)
-
-    for k, v in kwargs.items():
-        if isinstance(v, dict):
-            meta[k] = _create_meta(meta.get(k), **v)
-        elif v is not None:
-            meta[k] = v
-    return meta
-
-
 def _prepare_mask(img, mask_img=None, load_errors='raise'):
     """
     Prepare a binary mask for a 3D or 4D image.
@@ -178,15 +150,17 @@ def _prepare_mask(img, mask_img=None, load_errors='raise'):
     -------
     mask_data : np.ndarray
         Boolean array of shape (x, y, z) representing the binary mask.
+    mask_input : tuple or None
+        ``(path, meta)`` describing the mask for
+        ``provenance.record_step``, ``None`` if no mask was given.
     """
     if mask_img is not None:
-        mask_img, _ = _check_input_img(mask_img, load_errors=load_errors)
+        mask_img, mask_input = _check_input_img(mask_img, load_errors=load_errors)
         # Check if the mask needs to be resampled to match the image.
         shapes_match = img.shape[:3] == mask_img.shape[:3]
         # Check affine (voxel size + orientation + origin).
         affines_match = np.allclose(img.affine, mask_img.affine, atol=1e-3)
 
-        mask_filename = getattr(mask_img, 'get_filename', lambda: 'unknown')()
         if not shapes_match or not affines_match:
             mask_img = nilearn.image.resample_to_img(mask_img, img, interpolation='nearest')
 
@@ -194,9 +168,17 @@ def _prepare_mask(img, mask_img=None, load_errors='raise'):
     else:
         # Use everything if mask was not provided.
         mask_data = np.ones(img.shape[:3], dtype=bool)
-        mask_filename = 'no mask'
+        mask_input = None
 
-    return mask_data, mask_filename
+    return mask_data, mask_input
+
+
+def _atlas_input(atlas):
+    """Describe a file atlas for provenance; nilearn atlases are parameters."""
+    atlas_str = str(atlas)
+    if atlas_str.endswith('.nii') or atlas_str.endswith('.nii.gz'):
+        return provenance.describe(atlas_str)
+    return None
 
 
 def _correct_single_img(img, alpha=0.05, method='fdr_bh', mask_data=None):
@@ -253,7 +235,7 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
         Input p-value image. If a path is given the image is loaded from
         disk.
     meta : dict, optional
-        Metadata to propagate. Correction parameters are appended.
+        Sidecar of ``file_in``. Loaded from disk if not given.
     output_path : path-like or None, optional
         Path at which to save the corrected image. If ``None`` a default
         path is derived from ``file_in`` and ``suffix``. Pass ``False``
@@ -275,28 +257,24 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
     corr_img : nib.Nifti1Image
         Corrected p-value image.
     meta : dict
-        Updated metadata including correction parameters.
+        Sidecar of the corrected image.
     """
-    img, img_meta = _check_input_img(file_in, meta=meta, load_errors=load_errors)
+    img, img_input = _check_input_img(file_in, meta=meta, load_errors=load_errors)
 
     img = _select_contrast_img(img, contrast_idx=contrast_idx)
-    mask_data, mask_filename = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
+    mask_data, mask_input = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
     corr_img = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
-
-    meta = _create_meta(
-        meta,
-        **img_meta,
-        correction={
-            'method': method,
-            'alpha': alpha,
-            'contrast_idx': contrast_idx,
-            'mask': mask_filename
-        },
-        source_meta=img_meta
-    )
 
     if output_path is None:
         output_path = _get_output_path(file_in, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.correct_single_image',
+        inputs={'p_values': img_input, 'mask': mask_input},
+        parameters={'method': method, 'alpha': alpha, 'contrast_idx': contrast_idx},
+        output_path=output_path
+    )
+
     if output_path:
         io_utils.save_image(corr_img, output_path, meta=meta)
 
@@ -316,7 +294,7 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
         Path to a 4D image whose volumes correspond to individual
         contrasts.
     meta : dict, optional
-        Metadata to propagate. Correction parameters are appended.
+        Sidecar of ``file_in``. Loaded from disk if not given.
     output_path : path-like or None, optional
         Path at which to save the corrected 4D image. If ``None`` a
         default path is derived from ``file_in`` and ``suffix``. Pass
@@ -337,38 +315,37 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
         4D image of corrected p-values, contrasts concatenated in the
         same order as the input.
     meta : dict
-        Updated metadata including correction parameters.
+        Sidecar of the corrected image.
     """
     img, img_meta, img_dict = io_utils.load_contrasts_img(file_in, errors=load_errors)
+    img_input = provenance.describe(file_in, meta if meta is not None else img_meta)
 
     new_imgs = {}
     for contrast, img in img_dict.items():
-        mask_data, mask_filename = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
+        mask_data, mask_input = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
         new_imgs[contrast] = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
     concat_img = nib.concat_images(list(new_imgs.values()))
 
-    meta = _create_meta(
-        meta,
-        **img_meta,
-        correction={
-            'method': method,
-            'alpha': alpha,
-            'mask': mask_filename
-        },
-        source_meta=img_meta
-    )
-
     if output_path is None:
         output_path = _get_output_path(file_in, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.correct_images',
+        inputs={'p_values': img_input, 'mask': mask_input},
+        parameters={'method': method, 'alpha': alpha},
+        output_path=output_path,
+        fields={'volume_labels': list(new_imgs.keys())}
+    )
+
     if output_path:
         io_utils.save_image(concat_img, output_path, meta=meta)
 
     return concat_img, meta, new_imgs
 
 
-def correct_images_folder(path, meta=None, suffix='corrected', filename_contains='p_value', verbose=True, alpha=0.05, method='fdr_bh', mask_img=None):
+def correct_images_folder(path, suffix='corrected', filename_contains='p_value', verbose=True, alpha=0.05, method='fdr_bh', mask_img=None):
     """
     Correct all p-value images in a folder for multiple comparisons.
 
@@ -382,8 +359,6 @@ def correct_images_folder(path, meta=None, suffix='corrected', filename_contains
     ----------
     path : path-like
         Folder to search for p-value images.
-    meta : dict, optional
-        Metadata to propagate to each corrected image.
     suffix : str, optional
         Suffix appended to corrected filenames. Also used to skip files
         that were already corrected. Default is ``'corrected'``.
@@ -410,9 +385,9 @@ def correct_images_folder(path, meta=None, suffix='corrected', filename_contains
             continue
 
         if nib.load(file).ndim > 3:
-            corr_img, _ = correct_images(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
+            corr_img, _, _ = correct_images(file, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
         else:
-            corr_img, _ = correct_single_image(file, meta=meta, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
+            corr_img, _ = correct_single_image(file, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
 
         if verbose:
             corr_filename = corr_img.get_filename()
@@ -531,7 +506,8 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     regions : list of str
         Atlas region names to retain.
     meta : dict, optional
-        Metadata to propagate. ROI parameters are appended.
+        Sidecar of ``input_path``. Required to keep the provenance of
+        in-memory images; loaded from disk for paths if not given.
     contrast_idx : int, optional
         Index of the contrast to mask when ``input_path`` is 4D.
     atlas : str, optional
@@ -551,25 +527,28 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     masked_img : nib.Nifti1Image
         Image with voxels outside the ROI set to NaN.
     meta : dict
-        Updated metadata including ROI parameters.
+        Sidecar of the masked image.
     """
-    img, img_meta = _check_input_img(input_path, meta=meta, load_errors=load_errors)
+    img, img_input = _check_input_img(input_path, meta=meta, load_errors=load_errors)
     img = _select_contrast_img(img, contrast_idx=contrast_idx)
     masked_img = _roi_single_img(img, regions, atlas=atlas, outside_val=outside_val)
 
-    meta = _create_meta(
-        meta=meta,
-        roi={
-            'atlas': atlas,
+    if output_path is None:
+        output_path = _get_output_path(input_path, suffix=suffix)
+
+    atlas_input = _atlas_input(atlas)
+    meta = provenance.record_step(
+        'analysis.roi_single_image',
+        inputs={'img': img_input, 'atlas': atlas_input},
+        parameters={
+            'atlas': atlas if atlas_input is None else None,
             'regions': regions,
             'contrast_idx': contrast_idx,
             'outside_val': outside_val
         },
-        source_meta=img_meta
+        output_path=output_path
     )
 
-    if output_path is None:
-        output_path = _get_output_path(input_path, suffix=suffix)
     if output_path:
         io_utils.save_image(masked_img, output_path, meta=meta)
 
@@ -588,7 +567,7 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     regions : list of str
         Atlas region names to retain.
     meta : dict, optional
-        Metadata to propagate. ROI parameters are appended.
+        Sidecar of ``input_path``. Loaded from disk if not given.
     atlas : str, optional
         Atlas name. Default is ``'destrieux_2009'``.
     output_path : path-like or None, optional
@@ -607,9 +586,10 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
         4D masked image with contrasts concatenated in the same order as
         the input.
     meta : dict
-        Updated metadata including ROI parameters.
+        Sidecar of the masked image.
     """
     img, img_meta, img_dict = io_utils.load_contrasts_img(input_path, errors=load_errors)
+    img_input = provenance.describe(input_path, meta if meta is not None else img_meta)
 
     new_imgs = {}
     for contrast, contrast_img in img_dict.items():
@@ -618,17 +598,22 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     # Concatenate along a new axis to create a 4D image.
     concat_img = nib.concat_images(list(new_imgs.values()))
 
-    meta = _create_meta(
-        meta, roi={
-            'atlas': atlas,
+    if output_path is None:
+        output_path = _get_output_path(input_path, suffix=suffix)
+
+    atlas_input = _atlas_input(atlas)
+    meta = provenance.record_step(
+        'analysis.roi_images',
+        inputs={'img': img_input, 'atlas': atlas_input},
+        parameters={
+            'atlas': atlas if atlas_input is None else None,
             'regions': regions,
             'outside_val': outside_val
         },
-        source_meta=img_meta
+        output_path=output_path,
+        fields={'volume_labels': list(new_imgs.keys())}
     )
 
-    if output_path is None:
-        output_path = _get_output_path(input_path, suffix=suffix)
     if output_path:
         io_utils.save_image(concat_img, output_path, meta=meta)
 
@@ -675,7 +660,7 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     thresh_img : path-like or nib.Nifti1Image
         Corresponding p-value image used as the threshold mask.
     meta : dict, optional
-        Metadata to propagate. Thresholding parameters are appended.
+        Sidecar of ``img_to_thresh``. Loaded from disk if not given.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
     contrast_idx : int, optional
@@ -695,33 +680,28 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     masked_img : nib.Nifti1Image
         Thresholded image.
     meta : dict
-        Updated metadata including thresholding parameters and source
-        metadata for both inputs.
+        Sidecar of the thresholded image.
     """
-    est_img, est_meta = _check_input_img(img_to_thresh, meta=None, load_errors=load_errors)
+    est_img, est_input = _check_input_img(img_to_thresh, meta=meta, load_errors=load_errors)
     est_img = _select_contrast_img(est_img, contrast_idx=contrast_idx)
 
-    p_img, p_meta = _check_input_img(thresh_img, meta=None, load_errors=load_errors)
+    p_img, p_input = _check_input_img(thresh_img, load_errors=load_errors)
     p_img = _select_contrast_img(p_img, contrast_idx=contrast_idx)
 
-    mask_data, mask_filename = _prepare_mask(est_img, mask_img=mask_img, load_errors=load_errors)
+    mask_data, mask_input = _prepare_mask(est_img, mask_img=mask_img, load_errors=load_errors)
 
     masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
-    meta = _create_meta(
-        meta,
-        thresholding={
-            'alpha': alpha,
-            'contrast_idx': contrast_idx,
-            'thresh_val': thresh_val,
-            'mask': mask_filename
-        },
-        thresholded_from_meta=est_meta,
-        thresholding_meta=p_meta
-    )
-
     if output_path is None:
         output_path = _get_output_path(img_to_thresh, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.threshold_single_image',
+        inputs={'img': est_input, 'thresh_img': p_input, 'mask': mask_input},
+        parameters={'alpha': alpha, 'contrast_idx': contrast_idx, 'thresh_val': thresh_val},
+        output_path=output_path
+    )
+
     if output_path:
         io_utils.save_image(masked_img, output_path, meta=meta)
 
@@ -744,7 +724,7 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         Path to the p-value image used as the threshold mask. May be 3D
         (applied to all contrasts) or 4D (matched per contrast).
     meta : dict, optional
-        Metadata to propagate. Thresholding parameters are appended.
+        Sidecar of ``img_to_thresh``. Loaded from disk if not given.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
     output_path : path-like or None, optional
@@ -763,7 +743,7 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         4D thresholded image with contrasts in the same order as the
         input.
     meta : dict
-        Updated metadata including thresholding parameters.
+        Sidecar of the thresholded image.
 
     Raises
     ------
@@ -771,40 +751,39 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         If both images are 4D but their contrast keys do not match.
     """
     est_img, est_meta, est_dict = io_utils.load_contrasts_img(img_to_thresh, errors=load_errors)
+    est_input = provenance.describe(img_to_thresh, meta if meta is not None else est_meta)
     p_img = nib.load(thresh_img)
 
     if p_img.ndim == 4:
         _, p_meta, p_dict = io_utils.load_contrasts_img(thresh_img, errors=load_errors)
         if set(p_dict.keys()) != set(est_dict.keys()):
             raise ValueError('Threshold image contrasts do not match target image contrasts.')
+        p_input = provenance.describe(thresh_img, p_meta)
     else:
         logger.warning(f'Thresholding image {thresh_img} is 3D. Applying same threshold to all contrasts in {img_to_thresh}.')
         p_dict = {contrast: p_img for contrast in est_dict.keys()}
-        p_meta = {}
+        p_input = provenance.describe(thresh_img)
 
     new_imgs = {}
     for contrast, est_contrast_img in est_dict.items():
         p_contrast_img = p_dict[contrast]
-        mask_data, mask_filename = _prepare_mask(est_contrast_img, mask_img=mask_img, load_errors=load_errors)
+        mask_data, mask_input = _prepare_mask(est_contrast_img, mask_img=mask_img, load_errors=load_errors)
         new_imgs[contrast] = _threshold_single_img(est_contrast_img, p_contrast_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
     concat_img = nib.concat_images(list(new_imgs.values()))
 
-    meta = _create_meta(
-        meta,
-        thresholding={
-            'alpha': alpha,
-            'thresh_val': thresh_val,
-            'mask': mask_filename
-        },
-        thresholded_from_meta=est_meta,
-        thresholding_meta=p_meta,
-        volume_labels=list(est_dict.keys())
-    )
-
     if output_path is None:
         output_path = _get_output_path(img_to_thresh, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.threshold_images',
+        inputs={'img': est_input, 'thresh_img': p_input, 'mask': mask_input},
+        parameters={'alpha': alpha, 'thresh_val': thresh_val},
+        output_path=output_path,
+        fields={'volume_labels': list(new_imgs.keys())}
+    )
+
     if output_path:
         io_utils.save_image(concat_img, output_path, meta=meta)
 
@@ -865,7 +844,7 @@ def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, o
         If ``inconsistent_roi='raise'`` and the outside-ROI
         masking is inconsistent across contrasts.
     """
-    img, img_meta = _check_input_img(img, load_errors=load_errors)
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
 
     if img.ndim != 4:
         raise ValueError(f'img must be 4D, got {img.ndim}D.')
@@ -926,13 +905,6 @@ def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, o
         argmax_vals = np.argmax(data_for_argmax, axis=-1) + 1
         result[some_valid_in_roi] = argmax_vals[some_valid_in_roi]
 
-    meta = _create_meta(meta, argmax={
-        'thresh_val': below_thresh_val,
-        'outside_val': outside_roi_val,
-        'no_result_idx': no_result_idx,
-        'source_meta': img_meta
-    })
-
     out_img = nib.Nifti1Image(result, affine=img.affine)
 
     if output_path is None:
@@ -941,6 +913,19 @@ def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, o
             output_path = False
         else:
             output_path = _get_output_path(img, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.argmax_contrast',
+        inputs={'img': img_input},
+        parameters={
+            'below_thresh_val': below_thresh_val,
+            'outside_roi_val': outside_roi_val,
+            'no_result_idx': no_result_idx,
+            'inconsistent_roi': inconsistent_roi
+        },
+        output_path=output_path
+    )
+
     if output_path:
         io_utils.save_image(out_img, output_path, meta=meta)
 
@@ -949,11 +934,11 @@ def argmax_contrast(img, meta=None, output_path=None, below_thresh_val=np.nan, o
 
 def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
     
-    img, img_meta = _check_input_img(img, load_errors=load_errors)
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
     if img.ndim != 4:
         raise ValueError(f'img must be 4D, got {img.ndim}D.')
 
-    mask_data, mask_filename = _prepare_mask(img, mask_img, load_errors=load_errors)
+    mask_data, mask_input = _prepare_mask(img, mask_img, load_errors=load_errors)
 
     data = img.get_fdata()  # (x, y, z, t)
     data_2d = data[mask_data, :]  # (n_voxels, t)
@@ -965,23 +950,73 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
 
     result_img = nib.Nifti1Image(result_3d, img.affine, img.header)
 
-    meta = _create_meta(meta, apply={
-        'func_name': func.__name__ if hasattr(func, '__name__') else str(func),
-        'func_kwargs': func_kwargs,
-        'source_meta': img_meta,
-        'mask': mask_filename
-    })
-
     if output_path is None:
         if img.get_filename() is None:
             logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
             output_path = False
         else:
             output_path = _get_output_path(img, suffix=suffix)
+
+    meta = provenance.record_step(
+        'analysis.apply_over_time',
+        inputs={'img': img_input, 'mask': mask_input},
+        parameters={'func': func, 'func_kwargs': func_kwargs},
+        output_path=output_path
+    )
+
     if output_path:
         io_utils.save_image(result_img, output_path, meta=meta)
 
     return result_img, meta
+
+
+def concat_images(imgs, metas=None, labels=None, output_path=None):
+    """
+    Concatenate 3D images into a 4D image.
+
+    Parameters
+    ----------
+    imgs : list of nib.Nifti1Image or path-like
+        Images to concatenate, in order.
+    metas : list of dict, optional
+        Sidecars of ``imgs``. Required to keep the provenance of
+        in-memory images.
+    labels : list of str, optional
+        Label of each volume. Saved as ``volume_labels`` so the result
+        can be read with ``io_utils.load_contrasts_img``.
+    output_path : path-like or None, optional
+        Path at which to save the 4D image. Pass ``None``/``False`` to
+        suppress saving.
+
+    Returns
+    -------
+    concat_img : nib.Nifti1Image
+        4D image.
+    meta : dict
+        Sidecar of the 4D image.
+    """
+    if metas is None:
+        metas = [None] * len(imgs)
+    if labels is None:
+        labels = [str(idx) for idx in range(len(imgs))]
+    if not len(imgs) == len(metas) == len(labels):
+        raise ValueError('`imgs`, `metas` and `labels` must have the same length.')
+
+    concat_img = nib.concat_images(imgs)
+    if concat_img.ndim != 4 or concat_img.shape[-1] != len(imgs):
+        raise ValueError(f'Images have not been concatenated along the 4th dimension. The concatenated image shape: {concat_img.shape}')
+
+    meta = provenance.record_step(
+        'analysis.concat_images',
+        inputs={lab: provenance.describe(img, img_meta) for lab, img, img_meta in zip(labels, imgs, metas)},
+        output_path=output_path,
+        fields={'volume_labels': list(labels)}
+    )
+
+    if output_path:
+        io_utils.save_image(concat_img, output_path, meta=meta)
+
+    return concat_img, meta
 
 
 def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, only_positive=True):
@@ -1054,8 +1089,14 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         Image to save as a segmentation. If a path is given, the image is
         loaded from disk.
     meta : dict, optional
-        Metadata to propagate. Updated with ``type='segmentation'`` and
-        any additional parameters passed via kwargs.
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images.
+    template : path-like, nib.Nifti1Image or False, optional
+        Image defining the output grid. Defaults to the 1mm MNI152
+        template from nilearn. Pass ``False`` to keep the input grid.
+    labels : dict or list, optional
+        Label names, saved in the sidecar and as an ITK-SNAP label
+        description file.
     output_path : path-like or None, optional
         Path at which to save the segmentation image. If ``None`` a
         default path is derived from the input image path and ``suffix``.
@@ -1066,7 +1107,7 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     """
-    img, img_meta = _check_input_img(img, load_errors=load_errors)
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
 
     out_img = nib.Nifti1Image(
         img.get_fdata().astype(np.int16),
@@ -1075,11 +1116,15 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
     )
     out_img.header.set_data_dtype(np.int16)
 
+    template_input = None
+    template_name = None
     if template is None:
         template = nilearn.datasets.load_mni152_template(resolution=1)
-        template.name = template.get_filename()
+        template_name = 'nilearn.datasets.load_mni152_template(resolution=1)'
+    elif template is not False:
+        template_input = provenance.describe(template)
 
-    if template:
+    if template is not False:
         out_img = nilearn.image.resample_to_img(
             source_img=out_img,
             target_img=template,        # defines the output grid (space + resolution)
@@ -1094,26 +1139,29 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
     else:
         meta_labels = labels
 
-    meta = _create_meta(
-        meta,
-        segmentation={
-            'template': template.name if template else None,
-            'labels': meta_labels
-        },
-        source_meta=img_meta
-    )
-
     if output_path is None:
         if img.get_filename() is None:
             logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
             output_path = False
         else:
             output_path = _get_output_path(img, suffix=suffix)
+
+    labels_output_path = None
+    if labels is not None and output_path:
+        labels_output_path = _get_output_path(output_path, suffix='labels', extension='.txt')
+
+    meta = provenance.record_step(
+        'analysis.save_as_segmentation',
+        inputs={'img': img_input, 'template': template_input},
+        parameters={'template': template_name, 'color_palette': color_palette},
+        output_path=output_path,
+        fields={'labels': meta_labels, 'label_description_file': labels_output_path}
+    )
+
     if output_path:
         io_utils.save_image(out_img, output_path, meta=meta)
 
-    if labels is not None:
-        labels_output_path = _get_output_path(output_path, suffix='labels', extension='.txt')
+    if labels_output_path:
         _save_itksnap_label_description(labels, output_path=labels_output_path, color_palette=color_palette)
 
     return out_img, meta
@@ -1199,7 +1247,7 @@ def _remove_zeros(surf_img):
     return surf_img
 
 
-def project_image(img_to_project, contrast=None, meta=None, output_path=None, mesh='pial', standard_surface='fsaverage6', verbose=True, load_errors='raise', inner_mesh='white_matter', radius=4, n_samples=20, **kwargs):
+def project_image(img_to_project, contrast=None, meta=None, output_path=None, mesh='pial', standard_surface='fsaverage6', verbose=True, load_errors='raise', inner_mesh='white_matter', radius=4, n_samples=20, mesh_meta=None, inner_mesh_meta=None, **kwargs):
     """
     Project a volumetric image onto a standard surface.
 
@@ -1211,7 +1259,7 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
         Name of the contrast to project. Used to select a volume from a
         4D image and to name the output file.
     meta : dict, optional
-        Metadata to propagate. Projection parameters are appended.
+        Sidecar of ``img_to_project``. Loaded from disk if not given.
     output_path : path-like or None, optional
         Path at which to save the surface image. If ``None`` the file is
         saved in a ``surf/`` folder adjacent to the parent of
@@ -1235,6 +1283,9 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     n_samples : int, optional
         Number of samples along the normal for projection. Default is
         ``20``.
+    mesh_meta, inner_mesh_meta : dict, optional
+        Sidecars of ``mesh`` and ``inner_mesh`` when they are in-memory
+        meshes (e.g. from :func:`transform_surface_to_mni`).
     **kwargs
         Additional keyword arguments passed to
         ``SurfaceImage.from_volume``.
@@ -1244,8 +1295,10 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     surface_image : SurfaceImage
         Projected surface image.
     meta : dict
-        Updated metadata including projection parameters.
+        Sidecar of the surface image.
     """
+    mesh_param = mesh if isinstance(mesh, str) else None
+    inner_mesh_param = inner_mesh if isinstance(inner_mesh, str) else None
     if isinstance(mesh, str):
         with io_utils.optional_silent_print(verbose):
             fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
@@ -1261,6 +1314,7 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
         vol_img = img_dict[contrast]
     else:
         vol_img, vol_meta = io_utils.load_image(img_to_project, errors=load_errors)
+    vol_input = provenance.describe(img_to_project, meta if meta is not None else vol_meta)
 
     surface_image = SurfaceImage.from_volume(
         mesh=mesh,
@@ -1272,20 +1326,30 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     )
     surface_image = _remove_zeros(surface_image)
 
-    meta = _create_meta(meta, projection={
-        'standard_surface': standard_surface,
-        # 'mesh': mesh,
-        'contrast': contrast,
-        # 'inner_mesh': inner_mesh,
-        'radius': radius,
-        'n_samples': n_samples,
-        **kwargs
-    }, projected_from_meta=vol_meta)
-
     if output_path is None:
         # Make the `surf` folder outside of the `func` folder.
         surf_folder = Path(img_to_project).parent.parent / 'surf'
         output_path = surf_folder / f'{standard_surface}_{surface_type}_{contrast if contrast is not None else "unknown"}.gii'
+
+    meta = provenance.record_step(
+        'analysis.project_image',
+        inputs={
+            'img': vol_input,
+            'mesh': None if mesh_param else (None, mesh_meta),
+            'inner_mesh': None if inner_mesh_param else (None, inner_mesh_meta),
+        },
+        parameters={
+            'standard_surface': standard_surface if (mesh_param or inner_mesh_param) else None,
+            'mesh': mesh_param,
+            'inner_mesh': inner_mesh_param,
+            'contrast': contrast,
+            'radius': radius,
+            'n_samples': n_samples,
+            'zeros_to_nan': True,
+            **kwargs
+        },
+        output_path=output_path
+    )
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
@@ -1294,52 +1358,69 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     return surface_image, meta
 
 
-def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, **kwargs):
+def _surface_inputs(surf_file, meta=None):
     """
-    Create a static surface stat-map plot.
+    Load surface data for plotting and describe it for provenance.
 
-    Parameters
-    ----------
-    surf_file : path-like
-        Path to a surface image file created by :func:`project_img` or
-        saved using ``io_utils.save_surface``.
-    meta : dict, optional
-        Metadata to propagate. Plotting parameters are appended.
-    output_path : path-like or None, optional
-        Path at which to save the plot. If ``None`` the file is saved in
-        a ``plots/`` folder adjacent to the parent of ``surf_file``.
-        Pass ``False`` to suppress saving.
-    standard_surface : str, optional
-        fsaverage mesh resolution. Default is ``'fsaverage6'``.
-    surface_type : str, optional
-        Surface type. Default is ``'inflated'``.
-    verbose : bool, optional
-        If ``True``, suppress nilearn's printed output. Default is
-        ``False``.
-    **kwargs
-        Additional keyword arguments passed to
-        ``nilearn.plotting.plot_surf_stat_map``.
+    ``surf_file`` is either a path saved by ``io_utils.save_surface`` or
+    a dict with ``'left'``/``'right'`` keys holding paths to per-hemi
+    GIFTI files or arrays. For in-memory arrays, ``meta`` may be a dict
+    with the same keys holding the sidecar of each hemisphere.
+    """
+    if isinstance(surf_file, (Path, str)):
+        surface_image, surf_meta = io_utils.load_surface(surf_file)
+        if meta is not None:
+            surf_meta = meta
+        return surface_image, {'surface': provenance.describe(surf_file, surf_meta)}
+
+    data, inputs = {}, {}
+    for hemi, hemi_data in surf_file.items():
+        hemi_meta = meta.get(hemi) if isinstance(meta, dict) and hemi in meta else meta
+        if isinstance(hemi_data, (Path, str)):
+            inputs[hemi] = provenance.describe(hemi_data, hemi_meta)
+            hemi_data = nilearn.surface.load_surf_data(str(hemi_data))
+        else:
+            inputs[hemi] = (None, hemi_meta)
+        data[hemi] = hemi_data
+    return data, inputs
+
+
+def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+    """
+    Plot a surface image. See :func:`make_plot`.
 
     Returns
     -------
-    display : nilearn.plotting.displays.SurfaceAxes
+    display
         The nilearn display object.
-    meta : dict
-        Updated metadata including plotting parameters.
+    inputs : dict
+        Inputs for ``provenance.record_step``.
+    parameters : dict
+        Plotting parameters for ``provenance.record_step``.
     """
+    parameters = {
+        'standard_surface': standard_surface if isinstance(mesh, str) else None,
+        'mesh': mesh if isinstance(mesh, str) else None,
+        'colorbar_labels': colorbar_labels,
+        'cmap': cmap,
+        'cmap_bg_first': cmap_bg_first,
+        **kwargs
+    }
+
     if isinstance(mesh, str):
         with io_utils.optional_silent_print(verbose):
             fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
             fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh)
             mesh = fsaverage[mesh]
+        mesh_input = None
     else:
         fsaverage_data = None
+        mesh_input = (None, mesh_meta)
 
-    if isinstance(surf_file, (Path, str)):
-        surface_image, surf_meta = io_utils.load_surface(surf_file)
-    else:
-        surface_image = SurfaceImage(mesh=mesh, data=surf_file)
-        surf_meta = {}
+    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
+    if not isinstance(surface_image, SurfaceImage):
+        surface_image = SurfaceImage(mesh=mesh, data=surface_image)
+    inputs['mesh'] = mesh_input
 
     if 'vmin' not in kwargs or 'vmax' not in kwargs:
         # Set vmin/vmax based on the data range across both hemispheres.
@@ -1358,7 +1439,6 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         # constant var so cannot pass `cmap=None` directly.
         kwargs['cmap'] = cmap
 
-    contrast = surf_meta.get('projection', {}).get('contrast', 'unknown_contrast')
     display = nilearn.plotting.plot_surf_stat_map(
         surf_mesh=mesh,
         stat_map=surface_image,
@@ -1398,17 +1478,65 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         cbar_ax.set_yticklabels(colorbar_labels)
         cbar_ax.tick_params(labelsize=16)
 
-    meta = _create_meta(meta, plotting={
-        'standard_surface': standard_surface,
-        # 'surface_type': surface_type,
-        'contrast': contrast,
-        # **kwargs
-    })
+    return display, inputs, parameters
+
+
+def _plot_contrast(inputs):
+    """Contrast of the projected image a plot was made from, if known."""
+    surf_input = inputs.get('surface') or inputs.get('left') or (None, None)
+    return provenance.last_step(surf_input[1]).get('parameters', {}).get('contrast') or 'unknown_contrast'
+
+
+def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+    """
+    Create a static surface stat-map plot.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Path to a surface image file created by :func:`project_img` or
+        saved using ``io_utils.save_surface``, or a dict with
+        ``'left'``/``'right'`` keys holding per-hemi GIFTI paths or
+        arrays.
+    meta : dict, optional
+        Sidecar of ``surf_file`` (or a dict of per-hemi sidecars).
+        Loaded from disk for paths if not given.
+    mesh_meta : dict, optional
+        Sidecar of ``mesh`` when it is an in-memory mesh.
+    output_path : path-like or None, optional
+        Path at which to save the plot. If ``None`` the file is saved in
+        a ``plots/`` folder adjacent to the parent of ``surf_file``.
+        Pass ``False`` to suppress saving.
+    standard_surface : str, optional
+        fsaverage mesh resolution. Default is ``'fsaverage6'``.
+    surface_type : str, optional
+        Surface type. Default is ``'inflated'``.
+    verbose : bool, optional
+        If ``True``, suppress nilearn's printed output. Default is
+        ``False``.
+    **kwargs
+        Additional keyword arguments passed to
+        ``nilearn.plotting.plot_surf_stat_map``.
+
+    Returns
+    -------
+    display : nilearn.plotting.displays.SurfaceAxes
+        The nilearn display object.
+    meta : dict
+        Sidecar of the plot.
+    """
+    display, inputs, parameters = _plot_surface(
+        surf_file, meta=meta, standard_surface=standard_surface, mesh=mesh, verbose=verbose,
+        colorbar_labels=colorbar_labels, cmap=cmap, cmap_bg_first=cmap_bg_first, mesh_meta=mesh_meta, **kwargs
+    )
+    contrast = _plot_contrast(inputs)
 
     if output_path is None:
         # Make the `plots` folder outside of the `func` folder.
         plot_folder = Path(surf_file).parent.parent / 'plots'
         output_path = plot_folder / f'{standard_surface}_{surface_type}_{contrast}.png'
+
+    meta = provenance.record_step('analysis.make_plot', inputs=inputs, parameters=parameters, output_path=output_path)
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
@@ -1421,10 +1549,13 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
 
 
 def make_html2(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, atlas=None, **kwargs):
-    display, meta = make_plot(
-        surf_file=surf_file,
+    """
+    Create an interactive (plotly) HTML surface plot. Takes the same
+    arguments as :func:`make_plot`.
+    """
+    display, inputs, parameters = _plot_surface(
+        surf_file,
         meta=meta,
-        output_path=False,  # Don't save the static plot.
         standard_surface=standard_surface,
         mesh=mesh,
         verbose=verbose,
@@ -1434,8 +1565,9 @@ def make_html2(surf_file, meta=None, output_path=None, standard_surface='fsavera
     if output_path is None:
         # Make the `htmls` folder outside of the `func` folder.
         html_folder = Path(surf_file).parent.parent / 'htmls'
-        contrast = meta.get('plotting', {}).get('contrast', 'unknown_contrast')
-        output_path = html_folder / f'{standard_surface}_{surface_type}_{contrast}.html'
+        output_path = html_folder / f'{standard_surface}_{surface_type}_{_plot_contrast(inputs)}.html'
+
+    meta = provenance.record_step('analysis.make_html2', inputs=inputs, parameters=parameters, output_path=output_path)
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
@@ -1457,7 +1589,7 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
     surf_file : path-like
         Path to a surface image file created by :func:`project_img`.
     meta : dict, optional
-        Metadata to propagate. View parameters are appended.
+        Sidecar of ``surf_file``. Loaded from disk if not given.
     output_path : path-like or None, optional
         Path at which to save the HTML file. If ``None`` the file is
         saved in an ``htmls/`` folder adjacent to the parent of
@@ -1483,14 +1615,14 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
     view : nilearn.plotting.html_surface.SurfaceView
         The nilearn interactive view object.
     meta : dict
-        Updated metadata including view parameters.
+        Sidecar of the HTML file.
     """
     with io_utils.optional_silent_print(verbose):
         fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
         fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=surface_type)
 
-    surface_image, surf_meta = io_utils.load_surface(surf_file)
-    contrast = surf_meta.get('projection', {}).get('contrast', 'unknown_contrast')
+    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
+    contrast = _plot_contrast(inputs)
 
     # Automatic vmin/vmax does not work that well in view_surf.
     surface_data = surface_image.data.parts
@@ -1509,22 +1641,25 @@ def make_html(surf_file, meta=None, output_path=None, hemi='left', standard_surf
         surf_map=surface_image,
         bg_map=fsaverage_data,
         hemi=hemi,
-        source_meta=surf_meta,
         **kwargs
     )
-
-    meta = _create_meta(meta, view={
-        'standard_surface': standard_surface,
-        'surface_type': surface_type,
-        'contrast': contrast,
-        'hemi': hemi,
-        **kwargs
-    })
 
     if output_path is None:
         # Make the `htmls` folder outside of the `func` folder.
         html_folder = Path(surf_file).parent.parent / 'htmls'
         output_path = html_folder / f'{standard_surface}_{surface_type}_{contrast}.html'
+
+    meta = provenance.record_step(
+        'analysis.make_html',
+        inputs=inputs,
+        parameters={
+            'standard_surface': standard_surface,
+            'surface_type': surface_type,
+            'hemi': hemi,
+            **kwargs
+        },
+        output_path=output_path
+    )
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
@@ -1555,7 +1690,7 @@ def _transform_surface(coords, xfm_t1w_mni, xfm_fsnative_t1w=None, use_temp=True
         if xfm_fsnative_t1w is not None:
             ants_cmd += ["-t", str(xfm_fsnative_t1w)]
         
-        cmd = "ml load ants/2.6.0 && " + shlex.join(ants_cmd)
+        cmd = f"ml load {ANTS_MODULE} && " + shlex.join(ants_cmd)
     
         # This should handle setups where a login shell needs to be
         # used for lmod to work (e.g., HPC).
@@ -1592,25 +1727,22 @@ def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1
 
     surf_polymesh  = nilearn.surface.surface.PolyMesh(**surf_mesh)
 
-    meta = _create_meta(
-        meta,
-        transform={
-            'xfm_t1w_mni': xfm_t1w_mni,
-            'xfm_fsnative_t1w': xfm_fsnative_t1w
+    meta = provenance.record_step(
+        'analysis.transform_surface_to_mni',
+        inputs={
+            'left_surf': provenance.describe(left_surf),
+            'right_surf': provenance.describe(right_surf),
+            'xfm_t1w_mni': provenance.describe(xfm_t1w_mni),
+            'xfm_fsnative_t1w': provenance.describe(xfm_fsnative_t1w) if xfm_fsnative_t1w is not None else None,
         },
-        source={
-            'left': left_surf,
-            'right': right_surf
-        }
+        parameters={'tool': f'antsApplyTransformsToPoints ({ANTS_MODULE})'},
+        output_path=output_path
     )
 
     if output_path:
         os.makedirs(Path(output_path).parent, exist_ok=True)
         surf_polymesh.to_filename(output_path)
-
-        json_meta_path = Path(output_path).with_suffix('.json')
-        with open(json_meta_path, 'w') as f:
-            json.dump(meta, f, indent=2, cls=io_utils.PathEncoder)
+        io_utils.save_sidecar(output_path, meta)
     
     return surf_polymesh, meta
 
@@ -1656,7 +1788,7 @@ def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
             '-largest',
         ]
 
-        cmd = 'ml load   connectomeworkbench/1.5.0 && ' + shlex.join(wb_cmd)
+        cmd = f'ml load {WB_MODULE} && ' + shlex.join(wb_cmd)
         subprocess.run(['/bin/bash', '-lc', cmd], check=True)
 
         # Only need vertex data not their faces/mesh info.
@@ -1678,15 +1810,21 @@ def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surfac
         fsavg_sphere
     )
 
-    meta = _create_meta(
-        meta,
-        fsaverage_transform={
+    # The per-hemi data files share the sidecar of `surf_file`.
+    surf_meta = meta if meta is not None else io_utils.load_sidecar(surf_file, errors='warn')
+    meta = provenance.record_step(
+        'analysis.transform_surface_to_fsaverage',
+        inputs={
+            'surface': provenance.describe(surf, surf_meta),
+            'sphere': provenance.describe(surf_sphere),
+            'fsaverage_sphere': provenance.describe(fsavg_sphere),
+        },
+        parameters={
             'standard_surface': standard_surface,
             'hemi': hemi,
-            'source': surf,
-            'sphere': surf_sphere,
-            'fsavg_sphere': fsavg_sphere
-        }
+            'tool': f'wb_command -metric-resample BARYCENTRIC -largest ({WB_MODULE})'
+        },
+        output_path=output_path
     )
 
     if output_path:
