@@ -88,7 +88,7 @@ def create_bodymap(sub, ses, config, base_dir):
 
     logging.info('Applying WTA')
     wta_file = base_dir / wta_tpl.format(sub=sub, ses=ses)
-    wta_img, wta_meta = analysis.apply_over_time(
+    wta_img, wta_meta = analysis.apply_across_volumes(
         img=imgs,
         func=analysis.wta,
         meta=imgs_meta,
@@ -146,17 +146,24 @@ def create_bodymap(sub, ses, config, base_dir):
         inner_mesh=white_polymesh,
         mesh_meta=pial_meta,
         inner_mesh_meta=white_meta,
+        # Project each hemisphere only from its own ROI voxels.
+        hemi_regions={'left': roi_regions['lh'], 'right': roi_regions['rh']},
+        atlas=atlas_file,
         standard_surface='MNI152NLin2009cAsym',
+        dilate_dist=2.0,
+        erode=True
     )
 
     logging.info('Transforming projected image to fsaverage')
     fsavg_files = {}
     for hemi in ['left', 'right']:
         sphere_file = base_dir / sphere_reg_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
+        midthickness_file = base_dir / midthickness_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
         output_path = base_dir / fsavg_surf_tpl.format(sub=sub, ses=ses, hemi='L' if hemi == 'left' else 'R')
         analysis.transform_surface_to_fsaverage(
             projected_file,
             sphere_file,
+            midthickness_file,
             hemi=hemi,
             output_path=output_path,
             standard_surface='fsaverage',
@@ -263,6 +270,7 @@ config = dict(
     left_surf_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}_hemi-L.gii',
     right_surf_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}_hemi-R.gii',
     sphere_reg_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_space-fsaverage_desc-reg_sphere.surf.gii',
+    midthickness_tpl='fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-{hemi}_midthickness.surf.gii',
 
     projected_tpl='wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-surf_wta.gii',
     fsavg_surf_tpl = 'wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-surf_wta_hemi-{hemi}.func.gii',

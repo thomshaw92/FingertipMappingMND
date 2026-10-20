@@ -831,7 +831,7 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     return concat_img, meta, new_imgs
 
 
-def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
+def apply_across_volumes(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
     """
     Apply a function to the 4th-dimension values of every voxel.
 
@@ -900,7 +900,7 @@ def apply_over_time(img, func, mask_img=None, meta=None, output_path=None, suffi
             output_path = io_utils.get_output_path(img, suffix=suffix)
 
     meta = provenance.record_step(
-        'analysis.apply_over_time',
+        'analysis.apply_across_volumes',
         inputs={'img': img_input, 'mask': mask_input},
         parameters={'func': func, 'func_kwargs': func_kwargs},
         output_path=output_path
@@ -963,7 +963,8 @@ def concat_images(imgs, metas=None, labels=None, output_path=None):
 
 def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, only_positive=True):
     """
-    Winner-take-all function to be applied with :func:`apply_over_time`.
+    Winner-take-all function to be applied with
+    :func:`apply_across_volumes`.
 
     Returns the 1-based index of the largest valid value, so that ``0``
     can be used for outside the ROI. A value is valid if it is neither
@@ -1235,12 +1236,185 @@ def _remove_zeros(surf_img):
     return surf_img
 
 
-def project_image(img_to_project, contrast=None, meta=None, output_path=None, mesh='pial', standard_surface='fsaverage6', verbose=True, load_errors='raise', inner_mesh='white_matter', radius=4, n_samples=20, mesh_meta=None, inner_mesh_meta=None, **kwargs):
+def _write_label_gifti(data, path):
+    """
+    Save per-vertex integer labels as a GIFTI label file for Workbench.
+
+    NaNs are saved as key ``0``, Workbench's unlabelled key (``???``),
+    which is always included in the label table. Other keys are named
+    after their value.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Per-vertex labels of one hemisphere. NaN and ``0`` mean
+        unlabelled; all other values must be integers.
+    path : path-like
+        Output path, conventionally ending in ``.label.gii``.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` contains non-integer values (NaNs are allowed).
+    """
+    data = np.asarray(data)
+    labelled = np.isfinite(data)
+    if not np.all(data[labelled] == np.round(data[labelled])):
+        raise ValueError(
+            'Label operations require integer labels (e.g. projected with '
+            "interpolation='nearest_most_frequent'), but the data contain "
+            'non-integer values.'
+        )
+    # Replace NaNs with 0 for Workbench, which treats 0 as unlabelled.
+    keys = np.where(labelled, data, 0).astype(np.int32)
+
+    label_table = nib.gifti.GiftiLabelTable()
+    # Make sure that 0 is always present in the keys.
+    for key in [0] + sorted(set(np.unique(keys)) - {0}):
+        label = nib.gifti.GiftiLabel(key=int(key), red=0., green=0., blue=0., alpha=0. if key == 0 else 1.)
+        label.label = '???' if key == 0 else str(key)
+        label_table.labels.append(label)
+
+    darray = nib.gifti.GiftiDataArray(
+        keys.ravel(),
+        intent=nib.nifti1.intent_codes['NIFTI_INTENT_LABEL'],
+        datatype='NIFTI_TYPE_INT32',
+    )
+    nib.gifti.GiftiImage(darrays=[darray], labeltable=label_table).to_filename(path)
+
+
+def _dilate_labels(data, mesh, dilate_dist, erode=True, use_temp=True):
+    """
+    Dilate (and optionally erode) integer labels on one hemisphere with
+    ``wb_command -label-dilate`` and ``-label-erode``.
+
+    Dilation gives unlabelled vertices (NaN or ``0``) within
+    ``dilate_dist`` of a labelled vertex the nearest label; labelled
+    vertices are left unchanged. Eroding by the same distance afterwards
+    (a morphological closing) removes labels from vertices within
+    ``dilate_dist`` of a still unlabelled vertex. This fills gaps up to
+    about twice ``dilate_dist`` wide while pulling the outer edge of
+    the labelled area back to roughly where it was. Borders between two
+    labels are not eroded. Connectome Workbench is loaded with
+    ``ml load WB_MODULE`` in a login shell.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Per-vertex labels of one hemisphere. NaN and ``0`` mean
+        unlabelled; all other values must be integers.
+    mesh : nilearn.surface.surface.SurfaceMesh
+        Mesh of the same hemisphere, used for the geodesic distances.
+    dilate_dist : float
+        Dilation (and erosion) distance in mm.
+    erode : bool, optional
+        Erode by ``dilate_dist`` after dilating. Default is ``True``.
+    use_temp : bool, optional
+        Write intermediate files to a temporary directory under
+        ``$TMPDIR``. Default is ``True``.
+
+    Returns
+    -------
+    np.ndarray
+        Processed labels (float) with the shape of ``data``, ``0`` where
+        unlabelled, including vertices that were NaN in ``data``. In
+        :func:`project_image` these zeros are turned into NaN by
+        :func:`_remove_zeros` afterwards.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` contains non-integer values (NaNs are allowed).
+    """
+    data = np.asarray(data)
+
+    tmpdir = os.getenv('TMPDIR', '/tmp')
+    ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
+    with ctx as tmpdir:
+        label_path = Path(tmpdir) / 'labels.label.gii'
+        surf_path = Path(tmpdir) / 'mesh.surf.gii'
+        dilated_path = Path(tmpdir) / 'dilated.label.gii'
+        eroded_path = Path(tmpdir) / 'eroded.label.gii'
+        _write_label_gifti(data, label_path)
+        mesh.to_gifti(surf_path)
+
+        wb_cmds = [[
+            'wb_command', '-label-dilate',
+            str(label_path),
+            str(surf_path),
+            str(dilate_dist),
+            str(dilated_path),
+        ]]
+        out_path = dilated_path
+        if erode:
+            wb_cmds.append([
+                'wb_command', '-label-erode',
+                str(dilated_path),
+                str(surf_path),
+                str(dilate_dist),
+                str(eroded_path),
+            ])
+            out_path = eroded_path
+        cmd = f'ml load {WB_MODULE} && ' + ' && '.join(shlex.join(c) for c in wb_cmds)
+        subprocess.run(['/bin/bash', '-lc', cmd], check=True)
+
+        dilated = nib.load(str(out_path)).darrays[0].data.astype(np.float64)
+
+    return dilated.reshape(data.shape)
+
+
+def _default_surface_output_path(input_path, folder, standard_surface, mesh, contrast, extension):
+    """
+    Build the default output path of a surface output.
+
+    The file is saved in ``folder`` next to the parent folder of the
+    input (e.g. ``func/`` -> ``surf/``) and named
+    ``<input name>_<surface>_<contrast><extension>``.
+
+    Parameters
+    ----------
+    input_path : path-like or dict
+        Input file. For a dict of per-hemi files, the left hemisphere
+        file is used. If dict it assumes that key 'left' exists and its
+        value is path-like.
+    folder : str
+        Name of the output folder, e.g. ``'surf'`` or ``'plots'``.
+    standard_surface : str
+        fsaverage resolution, used in the name if ``mesh`` is a string.
+    mesh : str or None
+        Name of an fsaverage mesh, or anything else (e.g. ``None``) for
+        a custom in-memory mesh.
+    contrast : str or None
+        Contrast, ``'unknown'`` if ``None``.
+    extension : str
+        Extension including the leading dot.
+
+    Returns
+    -------
+    Path
+        Output path.
+
+    Raises
+    ------
+    ValueError
+        If ``input_path`` is not a path, so no default can be derived.
+    """
+    if isinstance(input_path, dict):
+        input_path = input_path.get('left')
+    if not isinstance(input_path, (str, Path)):
+        raise ValueError('Cannot derive a default output path for in-memory data; pass `output_path`.')
+    surface = f'{standard_surface}_{mesh}' if isinstance(mesh, str) else 'custom_mesh'
+    name = Path(io_utils.get_output_path(input_path, suffix=f'{surface}_{contrast or "unknown"}', extension=extension)).name
+    return Path(input_path).parent.parent / folder / name
+
+
+def project_image(img_to_project, contrast=None, meta=None, output_path=None, mesh='pial', standard_surface='fsaverage6', verbose=True, load_errors='raise', inner_mesh='white_matter', radius=4, n_samples=20, mesh_meta=None, inner_mesh_meta=None, hemi_regions=None, atlas=None, dilate_dist=None, erode=True, **kwargs):
     """
     Project a volumetric image onto a surface.
 
     Zeros in the projected data are replaced with NaN so they are
-    transparent in plots.
+    transparent in plots. Projected label images (e.g. WTA maps) can
+    optionally be dilated to fill small gaps left by the projection.
 
     Parameters
     ----------
@@ -1254,8 +1428,10 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     output_path : path-like or None, optional
         Path at which to save the surface image (see
         ``io_utils.save_surface``). If ``None`` the file is saved in a
-        ``surf/`` folder adjacent to the parent of ``img_to_project``.
-        Pass ``False`` to suppress saving.
+        ``surf/`` folder adjacent to the parent of ``img_to_project`` as
+        ``<input name>_<surface>_<contrast>.gii``, see
+        :func:`_default_surface_output_path`. Pass ``False`` to suppress
+        saving.
     mesh : str or nilearn.surface.PolyMesh, optional
         Outer mesh. A string selects a mesh of the ``standard_surface``
         fsaverage (e.g. ``'pial'``). Default is ``'pial'``.
@@ -1278,6 +1454,28 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
     mesh_meta, inner_mesh_meta : dict, optional
         Sidecars of ``mesh`` and ``inner_mesh`` when they are in-memory
         meshes (e.g. from :func:`transform_surface_to_mni`).
+    hemi_regions : dict, optional
+        Atlas regions of each hemisphere, as ``{'left': [...], 'right':
+        [...]}``. If given, each hemisphere is projected separately from
+        a copy of the volume in which voxels outside that hemisphere's
+        regions are set to ``0``, so that no values bleed from one
+        hemisphere into the other. Default is to project both
+        hemispheres from the whole volume.
+    atlas : str or path-like, optional
+        nilearn atlas name or path to a NIfTI atlas, see
+        :func:`get_roi_mask`. Required with ``hemi_regions``.
+    dilate_dist : float, optional
+        If given, dilate the projected labels by this distance (mm) on
+        ``mesh`` with ``wb_command -label-dilate``: unlabelled vertices
+        (``0``) within this distance of a label get the nearest label.
+        This runs before zeros are replaced with NaN. Requires integer
+        data, e.g. from ``interpolation='nearest_most_frequent'``.
+        Default is no dilation.
+    erode : bool, optional
+        Only used with ``dilate_dist``. Erode by the same distance after
+        dilating (``wb_command -label-erode``), so that gaps are filled
+        but the labels do not grow past the edge of the labelled area.
+        Default is ``True``.
     **kwargs
         Additional keyword arguments passed to
         ``SurfaceImage.from_volume`` (e.g. ``interpolation``, ``kind``).
@@ -1288,6 +1486,12 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
         Projected surface image.
     meta : dict
         Sidecar of the surface image.
+
+    Raises
+    ------
+    ValueError
+        If ``hemi_regions`` is given without ``atlas``, or the data are
+        not integer labels when ``dilate_dist`` is given.
     """
     mesh_param = mesh if isinstance(mesh, str) else None
     inner_mesh_param = inner_mesh if isinstance(inner_mesh, str) else None
@@ -1308,20 +1512,52 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
         vol_img, vol_meta = io_utils.load_image(img_to_project, errors=load_errors)
     vol_input = provenance.describe(img_to_project, meta if meta is not None else vol_meta)
 
-    surface_image = SurfaceImage.from_volume(
-        mesh=mesh,
-        volume_img=vol_img,
-        inner_mesh=inner_mesh,
-        radius=radius,
-        n_samples=n_samples,
-        **kwargs
-    )
+    if hemi_regions is None:
+        surface_image = SurfaceImage.from_volume(
+            mesh=mesh,
+            volume_img=vol_img,
+            inner_mesh=inner_mesh,
+            radius=radius,
+            n_samples=n_samples,
+            **kwargs
+        )
+    else:
+        # Project each hemisphere from its own copy of the volume so
+        # that vertices cannot pick up values from the other hemisphere
+        # (e.g. across the midline between the paracentral lobules).
+        if atlas is None:
+            raise ValueError('`atlas` is required with `hemi_regions`.')
+        mesh = mesh if isinstance(mesh, nilearn.surface.PolyMesh) else nilearn.surface.PolyMesh(**mesh)
+        inner_mesh = inner_mesh if inner_mesh is None or isinstance(inner_mesh, nilearn.surface.PolyMesh) else nilearn.surface.PolyMesh(**inner_mesh)
+        vol_data = vol_img.get_fdata()
+        textures = {}
+        for hemi in ('left', 'right'):
+            hemi_mask = get_roi_mask(img=vol_img, regions=hemi_regions[hemi], atlas=atlas, use_temp=False, verbose=0)
+            hemi_img = nib.Nifti1Image(np.where(hemi_mask.get_fdata() > 0, vol_data, 0), vol_img.affine, vol_img.header)
+            textures[hemi] = nilearn.surface.vol_to_surf(
+                hemi_img,
+                mesh.parts[hemi],
+                inner_mesh=inner_mesh.parts[hemi] if inner_mesh is not None else None,
+                radius=radius,
+                n_samples=n_samples,
+                **kwargs
+            )
+        surface_image = SurfaceImage(mesh=mesh, data=textures)
+
+    if dilate_dist:
+        for hemi in ('left', 'right'):
+            surface_image.data.parts[hemi] = _dilate_labels(
+                surface_image.data.parts[hemi],
+                surface_image.mesh.parts[hemi],
+                dilate_dist,
+                erode=erode
+            )
+
     surface_image = _remove_zeros(surface_image)
 
     if output_path is None:
-        # Make the `surf` folder outside of the `func` folder.
-        surf_folder = Path(img_to_project).parent.parent / 'surf'
-        output_path = surf_folder / f'{standard_surface}_{surface_type}_{contrast if contrast is not None else "unknown"}.gii'
+        # `mesh` is already the mesh object here, so use its name.
+        output_path = _default_surface_output_path(img_to_project, 'surf', standard_surface, mesh_param, contrast, '.gii')
 
     meta = provenance.record_step(
         'analysis.project_image',
@@ -1329,6 +1565,7 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
             'img': vol_input,
             'mesh': None if mesh_param else (None, mesh_meta),
             'inner_mesh': None if inner_mesh_param else (None, inner_mesh_meta),
+            'atlas': _atlas_input(atlas) if hemi_regions is not None else None,
         },
         parameters={
             'standard_surface': standard_surface if (mesh_param or inner_mesh_param) else None,
@@ -1337,7 +1574,14 @@ def project_image(img_to_project, contrast=None, meta=None, output_path=None, me
             'contrast': contrast,
             'radius': radius,
             'n_samples': n_samples,
+            'hemi_regions': hemi_regions,
+            'atlas': atlas if hemi_regions is not None and _atlas_input(atlas) is None else None,
             'zeros_to_nan': True,
+            'dilation': {
+                'dilate_dist': dilate_dist,
+                'erode': erode,
+                'tool': f'wb_command -label-dilate{" -label-erode" if erode else ""} ({WB_MODULE})'
+            } if dilate_dist else None,
             **kwargs
         },
         output_path=output_path
@@ -1435,6 +1679,7 @@ def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inf
     if 'vmin' not in kwargs or 'vmax' not in kwargs:
         # Set vmin/vmax based on the data range across both hemispheres.
         data = np.concatenate([surface_image.data.parts['left'], surface_image.data.parts['right']])
+        # Keep existing values in kwargs.
         kwargs['vmin'] = kwargs.get('vmin', np.nanmin(data))
         kwargs['vmax'] = kwargs.get('vmax', np.nanmax(data))
 
@@ -1456,10 +1701,13 @@ def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inf
         **kwargs
     )
 
+    # A labelled, discrete colorbar only makes sense for label data. For
+    # anything else keep nilearn's continuous colorbar.
+    if colorbar_labels is None or not kwargs.get('colorbar', True):
+        return display, inputs, parameters
+
     vmin = kwargs['vmin']
     vmax = kwargs['vmax']
-    if colorbar_labels is None:
-        colorbar_labels = [str(i) for i in range(vmin, vmax + 1)]
     if 'engine' in kwargs and kwargs['engine'] == 'plotly':
         n = len(colorbar_labels)
 
@@ -1526,8 +1774,11 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         Loaded from disk for paths if not given.
     output_path : path-like or None, optional
         Path at which to save the plot. If ``None`` the file is saved in
-        a ``plots/`` folder adjacent to the parent of ``surf_file``.
-        Pass ``False`` to suppress saving.
+        a ``plots/`` folder adjacent to the parent of ``surf_file`` (the
+        left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.png``, see
+        :func:`_default_surface_output_path`. Pass ``False`` to suppress
+        saving.
     standard_surface : str, optional
         fsaverage resolution used when ``mesh`` is a string. Default is
         ``'fsaverage6'``.
@@ -1539,8 +1790,10 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         If ``False``, suppress nilearn's printed output. Default is
         ``False``.
     colorbar_labels : list of str, optional
-        Tick labels for the integer values ``vmin``..``vmax``. Defaults
-        to the values themselves.
+        Tick labels for the integer values ``vmin``..``vmax``. If given,
+        the colorbar is drawn as discrete colour blocks, one per label
+        (for label data such as WTA maps). If not given, nilearn's
+        continuous colorbar is used.
     cmap : str, list or matplotlib colormap, optional
         Colormap. A list of colours is turned into a ``ListedColormap``.
     cmap_bg_first : bool, optional
@@ -1568,9 +1821,7 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
     contrast = _plot_contrast(inputs)
 
     if output_path is None:
-        # Make the `plots` folder outside of the `func` folder.
-        plot_folder = Path(surf_file).parent.parent / 'plots'
-        output_path = plot_folder / f'{standard_surface}_{surface_type}_{contrast}.png'
+        output_path = _default_surface_output_path(surf_file, 'plots', standard_surface, mesh, contrast, '.png')
 
     meta = provenance.record_step('analysis.make_plot', inputs=inputs, parameters=parameters, output_path=output_path)
 
@@ -1622,7 +1873,10 @@ def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fs
     output_path : path-like or None, optional
         Path at which to save the HTML file. If ``None`` the file is
         saved in an ``htmls/`` folder adjacent to the parent of
-        ``surf_file``. Pass ``False`` to suppress saving.
+        ``surf_file`` (the left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.html``, see
+        :func:`_default_surface_output_path`. Pass ``False`` to suppress
+        saving.
     atlas : optional
         Unused.
     **kwargs
@@ -1648,9 +1902,7 @@ def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fs
         **kwargs
     )
     if output_path is None:
-        # Make the `htmls` folder outside of the `func` folder.
-        html_folder = Path(surf_file).parent.parent / 'htmls'
-        output_path = html_folder / f'{standard_surface}_{surface_type}_{_plot_contrast(inputs)}.html'
+        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, mesh, _plot_contrast(inputs), '.html')
 
     meta = provenance.record_step('analysis.make_html2', inputs=inputs, parameters=parameters, output_path=output_path)
 
@@ -1681,7 +1933,10 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
     output_path : path-like or None, optional
         Path at which to save the HTML file. If ``None`` the file is
         saved in an ``htmls/`` folder adjacent to the parent of
-        ``surf_file``. Pass ``False`` to suppress saving.
+        ``surf_file`` (the left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.html``, see
+        :func:`_default_surface_output_path`. Pass ``False`` to suppress
+        saving.
     hemi : {'left', 'right'}, optional
         Hemisphere to display. Default is ``'left'``. The viewer does
         not support plotting both hemispheres at once.
@@ -1731,9 +1986,7 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
     )
 
     if output_path is None:
-        # Make the `htmls` folder outside of the `func` folder.
-        html_folder = Path(surf_file).parent.parent / 'htmls'
-        output_path = html_folder / f'{standard_surface}_{surface_type}_{contrast}.html'
+        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, surface_type, contrast, '.html')
 
     meta = provenance.record_step(
         'analysis.make_html',
@@ -1888,23 +2141,36 @@ def transform_surface_to_mni(left_surf, right_surf, xfm_t1w_mni, xfm_fsnative_t1
     return surf_polymesh, meta
 
 
-def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
+def _resample_labels_to_fsaverage(data_path, sphere_path, subject_midthickness, fsavg_sphere, fsavg_pial, fsavg_white, use_temp=True):
     """
-    Resample per-vertex data to fsaverage with
-    ``wb_command -metric-resample`` (barycentric, ``-largest``).
+    Resample per-vertex integer labels to fsaverage with
+    ``wb_command -label-resample``.
 
-    Connectome Workbench is loaded with ``ml load WB_MODULE`` in a login
-    shell.
+    Uses the adaptive barycentric method with vertex-area correction
+    (``ADAP_BARY_AREA -area-surfs``), which accounts for the different
+    vertex densities of the two meshes; each fsaverage vertex gets the
+    label with the largest weight. The fsaverage midthickness needed for
+    the area correction is built by averaging the fsaverage pial and
+    white surfaces, as nilearn does not provide one. Connectome
+    Workbench is loaded with ``ml load WB_MODULE`` in a login shell.
 
     Parameters
     ----------
     data_path : path-like
-        Single-hemisphere GIFTI data file on the subject's surface.
+        Single-hemisphere GIFTI data file of integer labels (NaN or
+        ``0`` for unlabelled) on the subject's surface.
     sphere_path : path-like
         Subject's sphere registered to fsaverage for the same hemisphere
         (e.g. fMRIPrep ``space-fsaverage_desc-reg_sphere.surf.gii``).
+    subject_midthickness : path-like
+        Subject's midthickness surface for the same hemisphere, with the
+        same vertices as ``sphere_path`` (e.g. fMRIPrep
+        ``hemi-L_midthickness.surf.gii``).
     fsavg_sphere : path-like
         Gzipped fsaverage sphere GIFTI for the same hemisphere, as
+        returned by ``nilearn.datasets.fetch_surf_fsaverage``.
+    fsavg_pial, fsavg_white : path-like
+        fsaverage pial and white surfaces for the same hemisphere, as
         returned by ``nilearn.datasets.fetch_surf_fsaverage``.
     use_temp : bool, optional
         Write intermediate files to a temporary directory under
@@ -1913,45 +2179,70 @@ def _resample_to_fsaverage(data_path, sphere_path, fsavg_sphere, use_temp=True):
     Returns
     -------
     np.ndarray
-        Per-vertex data on the fsaverage sphere.
+        Labels on fsaverage, NaN where unlabelled.
+
+    Raises
+    ------
+    ValueError
+        If the data are not integer labels.
     """
     tmpdir = os.getenv('TMPDIR', '/tmp')
     ctx = tempfile.TemporaryDirectory(dir=tmpdir) if use_temp else contextlib.nullcontext()
     with ctx as tmpdir:
         fsavg_sphere = io_utils.unpack_gifti(fsavg_sphere, output_path=Path(tmpdir) / Path(fsavg_sphere).name.replace('.gz', ''))
+        label_path = Path(tmpdir) / 'labels.label.gii'
+        out_path = Path(tmpdir) / 'resampled.label.gii'
+        _write_label_gifti(nib.load(str(data_path)).darrays[0].data, label_path)
 
-        out_path = Path(tmpdir) / 'resampled.func.gii'
+        # nilearn has no fsaverage midthickness; pial and white share
+        # their faces, so average their vertices.
+        pial = nilearn.surface.load_surf_mesh(fsavg_pial)
+        white = nilearn.surface.load_surf_mesh(fsavg_white)
+        fsavg_mid_path = Path(tmpdir) / 'fsaverage_midthickness.surf.gii'
+        nilearn.surface.surface.InMemoryMesh(
+            (pial.coordinates + white.coordinates) / 2,
+            pial.faces
+        ).to_gifti(fsavg_mid_path)
+
         wb_cmd = [
-            'wb_command', '-metric-resample',
-            str(data_path),
+            'wb_command', '-label-resample',
+            str(label_path),
             str(sphere_path),
             str(fsavg_sphere),
-            'BARYCENTRIC',
+            'ADAP_BARY_AREA',
             str(out_path),
-            '-largest',
+            '-area-surfs',
+            str(subject_midthickness),
+            str(fsavg_mid_path),
         ]
-
         cmd = f'ml load {WB_MODULE} && ' + shlex.join(wb_cmd)
         subprocess.run(['/bin/bash', '-lc', cmd], check=True)
 
-        # Only need vertex data not their faces/mesh info.
-        coords = nib.load(str(out_path)).darrays[0].data
+        labels = nib.load(str(out_path)).darrays[0].data.astype(np.float64)
 
-    return coords
+    labels[labels == 0] = np.nan
+    return labels
 
 
-def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surface='fsaverage6', output_path=None, meta=None, verbose=True):
+def transform_surface_to_fsaverage(surf_file, surf_sphere, subject_midthickness, hemi, standard_surface='fsaverage6', output_path=None, meta=None, verbose=True):
     """
-    Resample one hemisphere of a surface image to fsaverage.
+    Resample one hemisphere of a label surface image (e.g. a projected
+    WTA map) to fsaverage.
+
+    See :func:`_resample_labels_to_fsaverage` for the method.
 
     Parameters
     ----------
     surf_file : path-like
-        Base path of a surface image saved with
+        Base path of a surface image of integer labels saved with
         ``io_utils.save_surface`` (e.g. by :func:`project_image`). The
         data file of ``hemi`` is resampled.
     surf_sphere : path-like
         Subject's sphere registered to fsaverage for ``hemi``.
+    subject_midthickness : path-like
+        Subject's midthickness surface for ``hemi`` (e.g. fMRIPrep
+        ``hemi-L_midthickness.surf.gii``), used for the vertex-area
+        correction.
     hemi : {'left', 'right'}
         Hemisphere to resample.
     standard_surface : str, optional
@@ -1969,20 +2260,30 @@ def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surfac
     Returns
     -------
     surf_fsavg : np.ndarray
-        Per-vertex data on fsaverage.
+        Per-vertex labels on fsaverage, NaN where unlabelled.
     meta : dict
         Sidecar of the resampled data.
+
+    Raises
+    ------
+    ValueError
+        If the data are not integer labels.
     """
     with io_utils.optional_silent_print(verbose):
         fsaverage_surf = nilearn.datasets.fetch_surf_fsaverage(mesh=standard_surface)
-        fsavg_sphere = fsaverage_surf[f'sphere_{hemi}']
-    
+    fsavg_sphere = fsaverage_surf[f'sphere_{hemi}']
+    fsavg_pial = fsaverage_surf[f'pial_{hemi}']
+    fsavg_white = fsaverage_surf[f'white_{hemi}']
+
     surf = io_utils._get_surface_paths(surf_file, hemi='L' if hemi == 'left' else 'R', data_type='data')
 
-    surf_fsavg = _resample_to_fsaverage(
+    surf_fsavg = _resample_labels_to_fsaverage(
         surf,
         surf_sphere,
-        fsavg_sphere
+        subject_midthickness,
+        fsavg_sphere,
+        fsavg_pial,
+        fsavg_white
     )
 
     # The per-hemi data files share the sidecar of `surf_file`.
@@ -1992,12 +2293,15 @@ def transform_surface_to_fsaverage(surf_file, surf_sphere, hemi, standard_surfac
         inputs={
             'surface': provenance.describe(surf, surf_meta),
             'sphere': provenance.describe(surf_sphere),
+            'subject_midthickness': provenance.describe(subject_midthickness),
             'fsaverage_sphere': provenance.describe(fsavg_sphere),
+            'fsaverage_pial': provenance.describe(fsavg_pial),
+            'fsaverage_white': provenance.describe(fsavg_white),
         },
         parameters={
             'standard_surface': standard_surface,
             'hemi': hemi,
-            'tool': f'wb_command -metric-resample BARYCENTRIC -largest ({WB_MODULE})'
+            'tool': f'wb_command -label-resample ADAP_BARY_AREA -area-surfs ({WB_MODULE})'
         },
         output_path=output_path
     )
