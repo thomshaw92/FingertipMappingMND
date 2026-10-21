@@ -1,7 +1,8 @@
 """
 Provenance tracking for JSON sidecars.
 
-Every file written by ``analysis`` gets a JSON sidecar of the form::
+Every file written by ``volume``, ``surface`` and ``plotting`` gets a
+JSON sidecar of the form::
 
     {
       "volume_labels": [...],          # fields describing *this* file
@@ -10,7 +11,7 @@ Every file written by ``analysis`` gets a JSON sidecar of the form::
         "steps": [                     # all steps leading to this file,
           {                            # in the order they were run
             "id": "<step id>",
-            "function": "analysis.correct_images",
+            "function": "volume.correct_images",
             "run": "<run id>",
             "timestamp": "2026-10-19T12:00:00",
             "parameters": {...},
@@ -36,6 +37,7 @@ Each step, source and run appears exactly once, however many times it is
 reached through different inputs, so the sidecar of any file is a
 complete and self-contained record of how it was made.
 """
+import contextlib
 import datetime
 import importlib.metadata
 import os
@@ -51,6 +53,7 @@ import io_utils
 
 _PACKAGES = ('numpy', 'nibabel', 'nilearn', 'statsmodels', 'pandas', 'matplotlib')
 _RUN = None
+_PIPELINE_STEP = None
 
 
 def _git_info():
@@ -88,6 +91,46 @@ def _current_run():
             'git': _git_info(),
         })
     return _RUN
+
+
+def add_run_info(**info):
+    """
+    Add information to the record of the current run.
+
+    Use this for things that apply to every step of the process, e.g.
+    the configuration of a pipeline script. It is included in the
+    sidecars of all steps recorded afterwards.
+
+    Parameters
+    ----------
+    **info
+        Fields to add. Values are converted to strict JSON.
+    """
+    _, run_info = _current_run()
+    run_info.update(_jsonable(info))
+
+
+@contextlib.contextmanager
+def pipeline_step(name):
+    """
+    Label the steps recorded inside the block with a pipeline step name.
+
+    Use this in pipeline scripts to tell apart several runs of the same
+    function, e.g. two entries of a config that both call
+    ``surface.project_image``. The name is saved as ``pipeline_step`` in
+    each recorded step.
+
+    Parameters
+    ----------
+    name : str
+        Name of the pipeline step.
+    """
+    global _PIPELINE_STEP
+    previous, _PIPELINE_STEP = _PIPELINE_STEP, name
+    try:
+        yield
+    finally:
+        _PIPELINE_STEP = previous
 
 
 def _jsonable(obj):
@@ -206,6 +249,8 @@ def record_step(function, inputs, parameters=None, output_path=None, fields=None
         'inputs': refs,
         'output': os.path.abspath(output_path) if output_path else None,
     }
+    if _PIPELINE_STEP is not None:
+        step['pipeline_step'] = _PIPELINE_STEP
     steps.append(step)
 
     sidecar = _jsonable(fields or {})

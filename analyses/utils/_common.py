@@ -1,0 +1,200 @@
+"""
+Private helpers and settings shared by ``volume``, ``surface`` and
+``plotting``.
+"""
+from pathlib import Path
+
+import nibabel as nib
+import nilearn.image
+import numpy as np
+
+import io_utils
+import provenance
+
+# Lmod modules for the external tools (recorded in provenance).
+ANTS_MODULE = 'ants/2.6.0'
+WB_MODULE = 'connectomeworkbench/1.5.0'
+
+
+def _select_contrast_img(img, contrast_idx=None):
+    """
+    Select a 3D contrast volume from a potentially 4D image.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image
+        Input image, either 3D or 4D.
+    contrast_idx : int, optional
+        Index of the contrast to select along the 4th dimension.
+        Required when ``img`` is 4D.
+
+    Returns
+    -------
+    nib.Nifti1Image
+        3D image corresponding to the selected contrast, or the original
+        image if it was already 3D.
+
+    Raises
+    ------
+    ValueError
+        If ``img`` is 4D and ``contrast_idx`` is not provided, or if
+        ``img`` is 3D and ``contrast_idx`` is provided.
+    """
+    if img.ndim == 4:
+        if contrast_idx is None:
+            get_filename = getattr(img, 'get_filename', lambda: 'unknown')
+            filename = get_filename()
+            raise ValueError(f'4D image must have `contrast_idx` specified. File: {filename}')
+        return img.slicer[..., contrast_idx]
+    if contrast_idx is not None:
+        get_filename = getattr(img, 'get_filename', lambda: 'unknown')
+        filename = get_filename()
+        raise ValueError(f'Image is 3D but `contrast_idx` was provided for file: {filename}')
+    return img
+
+
+def _check_input_img(img, meta=None, load_errors='raise'):
+    """
+    Ensure ``img`` is a NiftiImage, loading from disk if necessary.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image or path-like
+        Image to check. If not already a NiftiImage, it will be loaded
+        via ``io_utils.load_image``.
+    meta : dict, optional
+        Sidecar of ``img``. Required for in-memory images to keep their
+        provenance. If ``img`` is a path and ``meta`` is not given, the
+        sidecar is loaded from disk.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    img : nib.Nifti1Image
+        The loaded image.
+    inp : tuple
+        ``(path, meta)`` describing the input for
+        ``provenance.record_step``.
+    """
+    if not isinstance(img, nib.Nifti1Image):
+        path = img
+        img, disk_meta = io_utils.load_image(img, errors=load_errors)
+        if meta is None:
+            meta = disk_meta
+        return img, provenance.describe(path, meta)
+
+    return img, provenance.describe(img, meta)
+
+
+def _prepare_mask(img, mask_img=None, load_errors='raise'):
+    """
+    Prepare a binary mask for a 3D or 4D image.
+
+    If ``mask_img`` is provided, it is checked for shape and affine
+    compatibility with ``img``. If they do not match, the mask is
+    resampled to the image space using nearest-neighbor interpolation.
+    If no mask is provided, a default mask of all ones is created.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image
+        Image for which to prepare the mask.
+    mask_img : nib.Nifti1Image or path-like, optional
+        Optional binary mask image. If provided, it will be checked and
+        potentially resampled to match ``img``.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors when loading ``mask_img``. Default
+        is ``'raise'``.
+
+    Returns
+    -------
+    mask_data : np.ndarray
+        Boolean array of shape (x, y, z) representing the binary mask.
+    mask_input : tuple or None
+        ``(path, meta)`` describing the mask for
+        ``provenance.record_step``, ``None`` if no mask was given.
+    """
+    if mask_img is not None:
+        mask_img, mask_input = _check_input_img(mask_img, load_errors=load_errors)
+        # Check if the mask needs to be resampled to match the image.
+        shapes_match = img.shape[:3] == mask_img.shape[:3]
+        # Check affine (voxel size + orientation + origin).
+        affines_match = np.allclose(img.affine, mask_img.affine, atol=1e-3)
+
+        if not shapes_match or not affines_match:
+            mask_img = nilearn.image.resample_to_img(mask_img, img, interpolation='nearest')
+
+        mask_data = mask_img.get_fdata().astype(bool)  # (x, y, z)
+    else:
+        # Use everything if mask was not provided.
+        mask_data = np.ones(img.shape[:3], dtype=bool)
+        mask_input = None
+
+    return mask_data, mask_input
+
+
+def _atlas_input(atlas):
+    """
+    Describe an atlas for ``provenance.record_step``.
+
+    Parameters
+    ----------
+    atlas : str or path-like
+        Path to a NIfTI atlas or a nilearn atlas name.
+
+    Returns
+    -------
+    tuple or None
+        ``(path, meta)`` for a NIfTI atlas. ``None`` for a nilearn
+        atlas, which is recorded as a parameter instead.
+    """
+    atlas_str = str(atlas)
+    if atlas_str.endswith('.nii') or atlas_str.endswith('.nii.gz'):
+        return provenance.describe(atlas_str)
+    return None
+
+
+def _default_surface_output_path(input_path, folder, standard_surface, mesh, contrast, extension):
+    """
+    Build the default output path of a surface output.
+
+    The file is saved in ``folder`` next to the parent folder of the
+    input (e.g. ``func/`` -> ``surf/``) and named
+    ``<input name>_<surface>_<contrast><extension>``.
+
+    Parameters
+    ----------
+    input_path : path-like or dict
+        Input file. For a dict of per-hemi files, the left hemisphere
+        file is used. If dict it assumes that key 'left' exists and its
+        value is path-like.
+    folder : str
+        Name of the output folder, e.g. ``'surf'`` or ``'plots'``.
+    standard_surface : str
+        fsaverage resolution, used in the name if ``mesh`` is a string.
+    mesh : str or None
+        Name of an fsaverage mesh, or anything else (e.g. ``None``) for
+        a custom in-memory mesh.
+    contrast : str or None
+        Contrast, ``'unknown'`` if ``None``.
+    extension : str
+        Extension including the leading dot.
+
+    Returns
+    -------
+    Path
+        Output path.
+
+    Raises
+    ------
+    ValueError
+        If ``input_path`` is not a path, so no default can be derived.
+    """
+    if isinstance(input_path, dict):
+        input_path = input_path.get('left')
+    if not isinstance(input_path, (str, Path)):
+        raise ValueError('Cannot derive a default output path for in-memory data; pass `output_path`.')
+    surface = f'{standard_surface}_{mesh}' if isinstance(mesh, str) else 'custom_mesh'
+    name = Path(io_utils.get_output_path(input_path, suffix=f'{surface}_{contrast or "unknown"}', extension=extension)).name
+    return Path(input_path).parent.parent / folder / name

@@ -1,0 +1,574 @@
+"""
+Static and interactive plots of surface data.
+"""
+import os
+from pathlib import Path
+
+import matplotlib
+import matplotlib.pyplot as plt
+import nilearn.datasets
+import nilearn.plotting
+import nilearn.surface
+import numpy as np
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.figure import Figure
+from nilearn.surface import SurfaceImage
+
+import io_utils
+import provenance
+from _common import _default_surface_output_path
+
+
+def _surface_inputs(surf_file, meta=None):
+    """
+    Load surface data for plotting and describe it for provenance.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Base path of a surface image saved with
+        ``io_utils.save_surface``, or a dict with ``'left'``/``'right'``
+        keys holding paths to per-hemi GIFTI files or arrays.
+    meta : dict, optional
+        Sidecar of ``surf_file``, or for a dict input either one sidecar
+        for both hemispheres or a dict of per-hemi sidecars. Loaded from
+        disk for paths if not given.
+
+    Returns
+    -------
+    surface : SurfaceImage or dict
+        The loaded surface image for a path input, or a dict of per-hemi
+        arrays for a dict input.
+    inputs : dict
+        Inputs for ``provenance.record_step``.
+    """
+    if isinstance(surf_file, (Path, str)):
+        surface_image, surf_meta = io_utils.load_surface(surf_file)
+        if meta is not None:
+            surf_meta = meta
+        return surface_image, {'surface': provenance.describe(surf_file, surf_meta)}
+
+    data, inputs = {}, {}
+    for hemi, hemi_data in surf_file.items():
+        hemi_meta = meta.get(hemi) if isinstance(meta, dict) and hemi in meta else meta
+        if isinstance(hemi_data, (Path, str)):
+            inputs[hemi] = provenance.describe(hemi_data, hemi_meta)
+            hemi_data = nilearn.surface.load_surf_data(str(hemi_data))
+        else:
+            inputs[hemi] = (None, hemi_meta)
+        data[hemi] = hemi_data
+    return data, inputs
+
+
+def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+    """
+    Plot a surface image without saving it.
+
+    Takes the same arguments as :func:`make_plot` except
+    ``output_path``.
+
+    Returns
+    -------
+    display
+        The nilearn display object (matplotlib figure or plotly
+        display).
+    inputs : dict
+        Inputs for ``provenance.record_step``.
+    parameters : dict
+        Plotting parameters for ``provenance.record_step``.
+    """
+    parameters = {
+        'standard_surface': standard_surface if isinstance(mesh, str) else None,
+        'mesh': mesh if isinstance(mesh, str) else None,
+        'colorbar_labels': colorbar_labels,
+        'cmap': cmap,
+        'cmap_bg_first': cmap_bg_first,
+        **kwargs
+    }
+
+    if isinstance(mesh, str):
+        with io_utils.optional_silent_print(verbose):
+            fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
+            fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh)
+            mesh = fsaverage[mesh]
+        mesh_input = None
+    else:
+        fsaverage_data = None
+        mesh_input = (None, mesh_meta)
+
+    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
+    if not isinstance(surface_image, SurfaceImage):
+        surface_image = SurfaceImage(mesh=mesh, data=surface_image)
+    inputs['mesh'] = mesh_input
+
+    if 'vmin' not in kwargs or 'vmax' not in kwargs:
+        # Set vmin/vmax based on the data range across both hemispheres.
+        data = np.concatenate([surface_image.data.parts['left'], surface_image.data.parts['right']])
+        # Keep existing values in kwargs.
+        kwargs['vmin'] = kwargs.get('vmin', np.nanmin(data))
+        kwargs['vmax'] = kwargs.get('vmax', np.nanmax(data))
+
+    if isinstance(cmap, list):
+        if cmap_bg_first:
+            # Remove the first color (background) from the colormap so
+            # that it is not used in the plot or the legend.
+            cmap = cmap[1:]
+        cmap = matplotlib.colors.ListedColormap(cmap)
+    if cmap is not None:
+        # The default value for `cmap` in `plot_surf_stat_map` is a
+        # constant var so cannot pass `cmap=None` directly.
+        kwargs['cmap'] = cmap
+
+    display = nilearn.plotting.plot_surf_stat_map(
+        surf_mesh=mesh,
+        stat_map=surface_image,
+        bg_map=fsaverage_data,
+        **kwargs
+    )
+
+    # A labelled, discrete colorbar only makes sense for label data. For
+    # anything else keep nilearn's continuous colorbar.
+    if colorbar_labels is None or not kwargs.get('colorbar', True):
+        return display, inputs, parameters
+
+    vmin = kwargs['vmin']
+    vmax = kwargs['vmax']
+    if 'engine' in kwargs and kwargs['engine'] == 'plotly':
+        n = len(colorbar_labels)
+
+        display.figure.update_traces(
+            cmin=vmin-0.5, cmax=vmax+0.5,  # to make sure that the colors extend past labels
+            colorbar=dict(
+                tickvals=np.arange(vmin, n + 1),   # [1, 2, 3, ... 8]
+                ticktext=colorbar_labels,
+                tickfont=dict(size=35),
+                tickmode='array',
+            )
+        )
+    else:
+        n = len(colorbar_labels)
+
+        cbar_ax = display.axes[-1]
+        cbar = cbar_ax._colorbar
+
+        cbar.vmin = vmin - 0.5
+        cbar.vmax = vmax + 0.5
+        cbar.boundaries = np.arange(vmin - 0.5, vmax + 1.5)
+        cbar._draw_all()  # needed to update the colorbar
+
+        cbar_ax.set_ylim(vmin - 0.5, vmax + 0.5)
+        cbar_ax.set_yticks(np.arange(vmin, n + 1))
+        cbar_ax.set_yticklabels(colorbar_labels)
+        cbar_ax.tick_params(labelsize=16)
+
+    return display, inputs, parameters
+
+
+def _plot_contrast(inputs):
+    """
+    Return the contrast of the projected image a plot is made from.
+
+    Parameters
+    ----------
+    inputs : dict
+        Inputs as returned by :func:`_surface_inputs`.
+
+    Returns
+    -------
+    str
+        The ``contrast`` parameter of the step that produced the
+        surface, or ``'unknown_contrast'``.
+    """
+    surf_input = inputs.get('surface') or inputs.get('left') or (None, None)
+    return provenance.last_step(surf_input[1]).get('parameters', {}).get('contrast') or 'unknown_contrast'
+
+
+def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+    """
+    Create a static surface stat-map plot.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Base path of a surface image created by
+        :func:`surface.project_image` (or saved with
+        ``io_utils.save_surface``), or a dict with
+        ``'left'``/``'right'`` keys holding per-hemi GIFTI paths or
+        arrays.
+    meta : dict, optional
+        Sidecar of ``surf_file`` (or a dict of per-hemi sidecars).
+        Loaded from disk for paths if not given.
+    output_path : path-like or None, optional
+        Path at which to save the plot. If ``None`` the file is saved in
+        a ``plots/`` folder adjacent to the parent of ``surf_file`` (the
+        left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.png``, see
+        :func:`_common._default_surface_output_path`. Pass ``False`` to
+        suppress saving.
+    standard_surface : str, optional
+        fsaverage resolution used when ``mesh`` is a string. Default is
+        ``'fsaverage6'``.
+    mesh : str or nilearn.surface.PolyMesh, optional
+        Mesh to plot on. A string selects a mesh of the
+        ``standard_surface`` fsaverage, which also provides the sulcal
+        background. Default is ``'inflated'``.
+    verbose : bool, optional
+        If ``False``, suppress nilearn's printed output. Default is
+        ``False``.
+    colorbar_labels : list of str, optional
+        Tick labels for the integer values ``vmin``..``vmax``. If given,
+        the colorbar is drawn as discrete colour blocks, one per label
+        (for label data such as WTA maps). If not given, nilearn's
+        continuous colorbar is used.
+    cmap : str, list or matplotlib colormap, optional
+        Colormap. A list of colours is turned into a ``ListedColormap``.
+    cmap_bg_first : bool, optional
+        If ``True`` and ``cmap`` is a list, its first colour is the
+        background and is dropped from the plot and colorbar. Default is
+        ``False``.
+    mesh_meta : dict, optional
+        Sidecar of ``mesh`` when it is an in-memory mesh.
+    **kwargs
+        Additional keyword arguments passed to
+        ``nilearn.plotting.plot_surf_stat_map``. ``vmin``/``vmax``
+        default to the data range across both hemispheres.
+
+    Returns
+    -------
+    display : matplotlib.figure.Figure or plotly display
+        The nilearn display object.
+    meta : dict
+        Sidecar of the plot.
+    """
+    display, inputs, parameters = _plot_surface(
+        surf_file, meta=meta, standard_surface=standard_surface, mesh=mesh, verbose=verbose,
+        colorbar_labels=colorbar_labels, cmap=cmap, cmap_bg_first=cmap_bg_first, mesh_meta=mesh_meta, **kwargs
+    )
+    contrast = _plot_contrast(inputs)
+
+    if output_path is None:
+        output_path = _default_surface_output_path(surf_file, 'plots', standard_surface, mesh, contrast, '.png')
+
+    meta = provenance.record_step('plotting.make_plot', inputs=inputs, parameters=parameters, output_path=output_path)
+
+    if output_path:
+        os.makedirs(Path(output_path).parent, exist_ok=True)
+        io_utils.save_figure(display, output_path, meta=meta)
+
+    if isinstance(display, matplotlib.figure.Figure):
+        plt.close(display)
+
+    return display, meta
+
+
+def make_html(*args, legacy=False, **kwargs):
+    """
+    Create an interactive HTML surface plot.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :func:`_surf_plot_html` or :func:`_view_surf_html`
+        depending on ``legacy``.
+
+    legacy : bool, optional
+        If ``True``, use the legacy nilearn viewer (``view_surf``)
+        instead of the new plotly-based viewer. Default is ``False``.
+
+    Returns
+    -------
+    display
+        The interactive display object.
+    meta : dict
+        Sidecar of the HTML file.
+    """
+    if legacy:
+        return _view_surf_html(*args, **kwargs)
+    else:
+        return _surf_plot_html(*args, **kwargs)
+
+
+def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, atlas=None, **kwargs):
+    """
+    Create an interactive (plotly) HTML surface plot.
+
+    Parameters
+    ----------
+    surf_file, meta, standard_surface, mesh, verbose
+        See :func:`make_plot`.
+    output_path : path-like or None, optional
+        Path at which to save the HTML file. If ``None`` the file is
+        saved in an ``htmls/`` folder adjacent to the parent of
+        ``surf_file`` (the left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.html``, see
+        :func:`_common._default_surface_output_path`. Pass ``False`` to
+        suppress saving.
+    atlas : optional
+        Unused.
+    **kwargs
+        Other arguments of :func:`make_plot` (e.g. ``cmap``,
+        ``colorbar_labels``, ``mesh_meta``) and of
+        ``nilearn.plotting.plot_surf_stat_map``. ``engine`` is always
+        ``'plotly'``.
+
+    Returns
+    -------
+    display
+        The nilearn plotly display object.
+    meta : dict
+        Sidecar of the HTML file.
+    """
+    display, inputs, parameters = _plot_surface(
+        surf_file,
+        meta=meta,
+        standard_surface=standard_surface,
+        mesh=mesh,
+        verbose=verbose,
+        engine='plotly',
+        **kwargs
+    )
+    if output_path is None:
+        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, mesh, _plot_contrast(inputs), '.html')
+
+    meta = provenance.record_step('plotting.make_html', inputs=inputs, parameters=parameters, output_path=output_path)
+
+    if output_path:
+        os.makedirs(Path(output_path).parent, exist_ok=True)
+        io_utils.save_figure(display, output_path, meta=meta, interactive=True)
+
+    return display, meta
+
+
+def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standard_surface='fsaverage6', surface_type='inflated', verbose=False, **kwargs):
+    """
+    Create an interactive HTML surface viewer with
+    ``nilearn.plotting.view_surf``.
+
+    The colour scale is set symmetrically around zero based on the data
+    range across both hemispheres, unless ``vmin``/``vmax`` are supplied
+    in ``**kwargs``.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Base path of a surface image created by
+        :func:`surface.project_image`, or a dict with
+        ``'left'``/``'right'`` keys, see :func:`make_plot`.
+    meta : dict, optional
+        Sidecar of ``surf_file``. Loaded from disk if not given.
+    output_path : path-like or None, optional
+        Path at which to save the HTML file. If ``None`` the file is
+        saved in an ``htmls/`` folder adjacent to the parent of
+        ``surf_file`` (the left hemisphere file for a dict) as
+        ``<input name>_<surface>_<contrast>.html``, see
+        :func:`_common._default_surface_output_path`. Pass ``False`` to
+        suppress saving.
+    hemi : {'left', 'right'}, optional
+        Hemisphere to display. Default is ``'left'``. The viewer does
+        not support plotting both hemispheres at once.
+    standard_surface : str, optional
+        fsaverage resolution. Default is ``'fsaverage6'``.
+    surface_type : str, optional
+        fsaverage mesh to plot on. Default is ``'inflated'``.
+    verbose : bool, optional
+        If ``False``, suppress nilearn's printed output. Default is
+        ``False``.
+    **kwargs
+        Additional keyword arguments passed to
+        ``nilearn.plotting.view_surf``.
+
+    Returns
+    -------
+    view : nilearn.plotting.html_surface.SurfaceView
+        The nilearn interactive view object.
+    meta : dict
+        Sidecar of the HTML file.
+    """
+    with io_utils.optional_silent_print(verbose):
+        fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
+        fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=surface_type)
+
+    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
+    contrast = _plot_contrast(inputs)
+
+    # Automatic vmin/vmax does not work that well in view_surf.
+    surface_data = surface_image.data.parts
+    data_max = float(np.nanmax([
+        np.nanmax(np.abs(surface_data['left'])),
+        np.nanmax(np.abs(surface_data['right']))
+    ]))
+    # Ensure that user-supplied values are not overridden.
+    if 'vmin' not in kwargs:
+        kwargs['vmin'] = -data_max
+    if 'vmax' not in kwargs:
+        kwargs['vmax'] = data_max
+
+    view = nilearn.plotting.view_surf(
+        surf_mesh=fsaverage[surface_type],
+        surf_map=surface_image,
+        bg_map=fsaverage_data,
+        hemi=hemi,
+        **kwargs
+    )
+
+    if output_path is None:
+        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, surface_type, contrast, '.html')
+
+    meta = provenance.record_step(
+        'plotting.make_html',
+        inputs=inputs,
+        parameters={
+            'standard_surface': standard_surface,
+            'surface_type': surface_type,
+            'hemi': hemi,
+            **kwargs
+        },
+        output_path=output_path
+    )
+
+    if output_path:
+        os.makedirs(Path(output_path).parent, exist_ok=True)
+        io_utils.save_view(view, output_path, meta=meta)
+
+    return view, meta
+
+
+def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **plot_kwargs):
+    """
+    Render one view of one hemisphere and crop it to the brain.
+
+    The view is drawn with :func:`make_plot` on its own figure, which is
+    created with an Agg canvas directly (not through pyplot) so that it
+    can still be rendered after ``make_plot`` closes it.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Surface image, as accepted by :func:`make_plot`.
+    hemi : {'left', 'right'}
+        Hemisphere to show.
+    view : str
+        nilearn view, e.g. ``'lateral'`` or ``'medial'``.
+    colors : list
+        Colours with the background first.
+    n_labels : int
+        Number of labels; values ``1..n_labels`` are coloured.
+    meta : dict, optional
+        Sidecar of ``surf_file``, passed to :func:`make_plot`.
+    dpi : int, optional
+        Resolution of the rendering. Default is ``200``.
+    **plot_kwargs
+        Passed to :func:`make_plot`.
+
+    Returns
+    -------
+    img : np.ndarray
+        RGB image cropped to the non-white pixels.
+    meta : dict
+        Sidecar of the view from :func:`make_plot`.
+    """
+    fig = Figure(figsize=(8, 6), dpi=dpi)
+    canvas = FigureCanvasAgg(fig)
+    ax = fig.add_subplot(projection='3d')
+    # No per-view colorbar: the figure gets one shared colorbar.
+    _, view_meta = make_plot(
+        surf_file,
+        meta=meta,
+        output_path=False,
+        hemi=hemi,
+        view=view,
+        axes=ax,
+        colorbar=False,
+        cmap=colors,
+        cmap_bg_first=True,
+        vmin=1,
+        vmax=n_labels,
+        engine='matplotlib',
+        **plot_kwargs
+    )
+    canvas.draw()
+    img = np.asarray(canvas.buffer_rgba())[..., :3].copy()
+
+    # 3D axes leave a wide margin around the brain; crop it away.
+    content = (img < 250).any(axis=2)
+    rows, cols = np.where(content.any(axis=1))[0], np.where(content.any(axis=0))[0]
+    if rows.size and cols.size:
+        img = img[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+    return img, view_meta
+
+
+def plot_lateral_medial(surf_file, output_path, labels, colors, meta=None, **plot_kwargs):
+    """
+    Plot lateral and medial views of both hemispheres in a 2x2 figure
+    with one shared colorbar.
+
+    Each view is rendered separately and cropped to the brain (see
+    :func:`_render_view`), so the panels can be placed close together.
+
+    Parameters
+    ----------
+    surf_file : path-like or dict
+        Surface image of integer labels ``1..len(labels)``, as accepted
+        by :func:`make_plot`.
+    output_path : path-like
+        Path of the PNG. A JSON sidecar is written next to it.
+    labels : list of str
+        Name of each label value, starting at ``1``.
+    colors : list
+        Colours with the background first, i.e. ``len(labels) + 1``
+        colours as in the ``cmap`` config.
+    meta : dict, optional
+        Sidecar of ``surf_file``, passed to :func:`make_plot`.
+    **plot_kwargs
+        Passed to :func:`make_plot` (e.g. ``mesh``, ``mesh_meta``,
+        ``standard_surface``, ``avg_method``).
+
+    Returns
+    -------
+    meta : dict
+        Sidecar of the figure.
+    """
+    panels, panel_metas = {}, {}
+    for hemi in ('left', 'right'):
+        for view in ('lateral', 'medial'):
+            panels[hemi, view], panel_metas[f'{hemi}_{view}'] = _render_view(
+                surf_file, hemi, view, colors, len(labels), meta=meta, **plot_kwargs
+            )
+
+    # Lay the cropped views out edge to edge, sized so that they keep
+    # their aspect ratio, with the colorbar in its own column.
+    aspect = np.mean([img.shape[1] / img.shape[0] for img in panels.values()])
+    fig_width, cbar_frac, gap = 10, 0.14, 0.02
+    panel_width = fig_width * (1 - cbar_frac) / 2
+    fig = plt.figure(figsize=(fig_width, 2 * panel_width / aspect))
+    for row, hemi in enumerate(('left', 'right')):
+        for col, view in enumerate(('lateral', 'medial')):
+            ax = fig.add_axes([
+                col * (1 - cbar_frac) / 2,
+                0.5 - row * 0.5,
+                (1 - cbar_frac) / 2 - gap / 2,
+                0.5 - gap / 2
+            ])
+            ax.imshow(panels[hemi, view])
+            ax.set_axis_off()
+
+    # Discrete colorbar with one block per label.
+    norm = BoundaryNorm(np.arange(0.5, len(labels) + 1.5), len(labels))
+    mappable = ScalarMappable(norm=norm, cmap=ListedColormap(colors[1:]))
+    cax = fig.add_axes([1 - cbar_frac + 0.03, 0.15, 0.02, 0.7])
+    cbar = fig.colorbar(mappable, cax=cax, ticks=range(1, len(labels) + 1))
+    cbar.ax.set_yticklabels(labels)
+
+    fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+    meta = provenance.record_step(
+        'plotting.plot_lateral_medial',
+        inputs={panel: (None, panel_meta) for panel, panel_meta in panel_metas.items()},
+        parameters={'labels': labels, 'colors': colors},
+        output_path=output_path
+    )
+    io_utils.save_sidecar(output_path, meta)
+    return meta
