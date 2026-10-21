@@ -2,6 +2,8 @@
 Volumetric processing of statistical maps: multiple-comparison
 correction, thresholding, ROI masking, winner-take-all and
 segmentations.
+
+See ``_common`` for the conventions all public functions follow.
 """
 import contextlib
 import logging
@@ -19,7 +21,9 @@ import io_utils
 import provenance
 from _common import (
     _atlas_input,
+    _check_contrasts_img,
     _check_input_img,
+    _labels,
     _prepare_mask,
     _select_contrast_img,
 )
@@ -77,25 +81,23 @@ def _correct_single_img(img, alpha=0.05, method='fdr_bh', mask_data=None):
     return nib.Nifti1Image(corr, affine=img.affine)
 
 
-def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', contrast_idx=None, suffix='corrected', load_errors='raise'):
+def correct_single_image(img, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', contrast_idx=None, load_errors='raise'):
     """
     Correct p-values in a single image for multiple comparisons.
 
     Parameters
     ----------
-    file_in : path-like or nib.Nifti1Image
-        Input p-value image. If a path is given the image is loaded from
-        disk.
+    img : path-like or nib.Nifti1Image
+        Input p-value image, 3D or 4D (see ``contrast_idx``).
     meta : dict, optional
-        Sidecar of ``file_in``. Required to keep the provenance of
-        in-memory images; loaded from disk for paths if not given.
-    output_path : path-like or None, optional
-        Path at which to save the corrected image. If ``None`` a default
-        path is derived from ``file_in`` and ``suffix``. Pass ``False``
-        to suppress saving.
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the corrected image. Not saved if not
+        given.
     mask_img : path-like or nib.Nifti1Image, optional
         Brain mask. Only voxels inside it are corrected; voxels outside
-        are set to ``0``. Resampled to ``file_in`` if needed.
+        are set to ``0``. Resampled to ``img`` if needed.
     alpha : float, optional
         Error rate (FDR for ``'fdr_*'`` methods, FWER otherwise).
         Default is ``0.05``.
@@ -103,10 +105,7 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
         Correction method passed to ``multipletests``. Default is
         ``'fdr_bh'``.
     contrast_idx : int, optional
-        Index of the contrast to correct when ``file_in`` is 4D.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'corrected'``.
+        Index of the contrast to correct when ``img`` is 4D.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
 
@@ -117,14 +116,11 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
     meta : dict
         Sidecar of the corrected image.
     """
-    img, img_input = _check_input_img(file_in, meta=meta, load_errors=load_errors)
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
 
     img = _select_contrast_img(img, contrast_idx=contrast_idx)
     mask_data, mask_input = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
     corr_img = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(file_in, suffix=suffix)
 
     meta = provenance.record_step(
         'volume.correct_single_image',
@@ -139,7 +135,7 @@ def correct_single_image(file_in, meta=None, output_path=None, mask_img=None, al
     return corr_img, meta
 
 
-def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', suffix='corrected', load_errors='raise'):
+def correct_images(img, meta=None, output_path=None, mask_img=None, alpha=0.05, method='fdr_bh', load_errors='raise'):
     """
     Correct p-values for multiple comparisons across all contrasts in a
     4D image.
@@ -148,53 +144,44 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
 
     Parameters
     ----------
-    file_in : path-like
-        Path to a 4D image whose volumes are labelled by
-        ``volume_labels`` in its sidecar.
+    img : path-like or nib.Nifti1Image
+        4D p-value image whose volumes are labelled by ``volume_labels``
+        in its sidecar.
     meta : dict, optional
-        Sidecar of ``file_in``. Loaded from disk if not given.
-    output_path : path-like or None, optional
-        Path at which to save the corrected 4D image. If ``None`` a
-        default path is derived from ``file_in`` and ``suffix``. Pass
-        ``False`` to suppress saving.
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the corrected 4D image. Not saved if not
+        given.
     mask_img : path-like or nib.Nifti1Image, optional
         Brain mask. Only voxels inside it are corrected; voxels outside
-        are set to ``0``. Resampled to ``file_in`` if needed.
+        are set to ``0``. Resampled to ``img`` if needed.
     alpha : float, optional
         Error rate (FDR for ``'fdr_*'`` methods, FWER otherwise).
         Default is ``0.05``.
     method : str, optional
         Correction method passed to ``multipletests``. Default is
         ``'fdr_bh'``.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'corrected'``.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
 
     Returns
     -------
-    concat_img : nib.Nifti1Image
-        4D image of corrected p-values, contrasts concatenated in the
-        same order as the input.
+    corr_img : nib.Nifti1Image
+        4D image of corrected p-values, contrasts in the same order as
+        the input.
     meta : dict
         Sidecar of the corrected image.
-    new_imgs : dict
-        Mapping of contrast label to its corrected 3D image.
     """
-    img, img_meta, img_dict = io_utils.load_contrasts_img(file_in, errors=load_errors)
-    img_input = provenance.describe(file_in, meta if meta is not None else img_meta)
+    img_dict, img_input = _check_contrasts_img(img, meta=meta, load_errors=load_errors)
 
     new_imgs = {}
-    for contrast, img in img_dict.items():
-        mask_data, mask_input = _prepare_mask(img, mask_img=mask_img, load_errors=load_errors)
-        new_imgs[contrast] = _correct_single_img(img, alpha=alpha, method=method, mask_data=mask_data)
+    for contrast, contrast_img in img_dict.items():
+        mask_data, mask_input = _prepare_mask(contrast_img, mask_img=mask_img, load_errors=load_errors)
+        new_imgs[contrast] = _correct_single_img(contrast_img, alpha=alpha, method=method, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
-    concat_img = nib.concat_images(list(new_imgs.values()))
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(file_in, suffix=suffix)
+    corr_img = nib.concat_images(list(new_imgs.values()))
 
     meta = provenance.record_step(
         'volume.correct_images',
@@ -205,9 +192,9 @@ def correct_images(file_in, meta=None, output_path=None, mask_img=None, alpha=0.
     )
 
     if output_path:
-        io_utils.save_image(concat_img, output_path, meta=meta)
+        io_utils.save_image(corr_img, output_path, meta=meta)
 
-    return concat_img, meta, new_imgs
+    return corr_img, meta
 
 
 def correct_images_folder(path, suffix='corrected', filename_contains='p_value', verbose=True, alpha=0.05, method='fdr_bh', mask_img=None):
@@ -253,15 +240,14 @@ def correct_images_folder(path, suffix='corrected', filename_contains='p_value',
                 logger.info(f'Skipping {file.relative_to(path)}')
             continue
 
+        output_path = io_utils.get_output_path(file, suffix=suffix)
         if nib.load(file).ndim > 3:
-            corr_img, _, _ = correct_images(file, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
+            correct_images(file, output_path=output_path, alpha=alpha, method=method, load_errors='warn', mask_img=mask_img)
         else:
-            corr_img, _ = correct_single_image(file, alpha=alpha, method=method, suffix=suffix, load_errors='warn', mask_img=mask_img)
+            correct_single_image(file, output_path=output_path, alpha=alpha, method=method, load_errors='warn', mask_img=mask_img)
 
         if verbose:
-            corr_filename = corr_img.get_filename()
-            corr_display = Path(corr_filename).relative_to(path) if corr_filename else 'unknown'
-            logger.info(f'Corrected {file.relative_to(path)} -> {corr_display}')
+            logger.info(f'Corrected {file.relative_to(path)} -> {Path(output_path).relative_to(path)}')
 
 
 def _roi_single_img(img, regions, atlas='destrieux_2009', outside_val=np.nan):
@@ -367,31 +353,26 @@ def get_roi_mask(img, regions, atlas='destrieux_2009', use_temp=True, verbose=1)
     return mask_resampled
 
 
-def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='destrieux_2009', output_path=None, suffix='roi', load_errors='raise', outside_val=np.nan):
+def roi_single_image(img, regions, meta=None, contrast_idx=None, atlas='destrieux_2009', output_path=None, load_errors='raise', outside_val=np.nan):
     """
     Apply an atlas-based ROI mask to a single image.
 
     Parameters
     ----------
-    input_path : path-like or nib.Nifti1Image
-        Input image to mask.
+    img : path-like or nib.Nifti1Image
+        Input image to mask, 3D or 4D (see ``contrast_idx``).
     regions : list of str
         Atlas region names to retain.
     meta : dict, optional
-        Sidecar of ``input_path``. Required to keep the provenance of
-        in-memory images; loaded from disk for paths if not given.
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
     contrast_idx : int, optional
-        Index of the contrast to mask when ``input_path`` is 4D.
+        Index of the contrast to mask when ``img`` is 4D.
     atlas : str or path-like, optional
         nilearn atlas name or path to a NIfTI atlas, see
         :func:`get_roi_mask`. Default is ``'destrieux_2009'``.
-    output_path : path-like or None, optional
-        Path at which to save the masked image. If ``None`` a default
-        path is derived from ``input_path`` and ``suffix``. Pass
-        ``False`` to suppress saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'roi'``.
+    output_path : path-like, optional
+        Path at which to save the masked image. Not saved if not given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     outside_val : float, optional
@@ -404,12 +385,9 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     meta : dict
         Sidecar of the masked image.
     """
-    img, img_input = _check_input_img(input_path, meta=meta, load_errors=load_errors)
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
     img = _select_contrast_img(img, contrast_idx=contrast_idx)
     masked_img = _roi_single_img(img, regions, atlas=atlas, outside_val=outside_val)
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(input_path, suffix=suffix)
 
     atlas_input = _atlas_input(atlas)
     meta = provenance.record_step(
@@ -430,29 +408,28 @@ def roi_single_image(input_path, regions, meta=None, contrast_idx=None, atlas='d
     return masked_img, meta
 
 
-def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_path=None, suffix='roi', load_errors='raise', outside_val=np.nan):
+def roi_images(img, regions, meta=None, atlas='destrieux_2009', output_path=None, load_errors='raise', outside_val=np.nan):
     """
-    Apply an atlas-based ROI mask to all contrasts in a 4D image.
+    Apply the same atlas-based ROI mask to all contrasts in a 4D image.
+
+    See :func:`roi_per_contrast` for a different ROI per contrast.
 
     Parameters
     ----------
-    input_path : path-like
-        Path to a 4D image whose volumes are labelled by
-        ``volume_labels`` in its sidecar.
+    img : path-like or nib.Nifti1Image
+        4D image whose volumes are labelled by ``volume_labels`` in its
+        sidecar.
     regions : list of str
         Atlas region names to retain.
     meta : dict, optional
-        Sidecar of ``input_path``. Loaded from disk if not given.
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
     atlas : str or path-like, optional
         nilearn atlas name or path to a NIfTI atlas, see
         :func:`get_roi_mask`. Default is ``'destrieux_2009'``.
-    output_path : path-like or None, optional
-        Path at which to save the masked 4D image. If ``None`` a default
-        path is derived from ``input_path`` and ``suffix``. Pass
-        ``False`` to suppress saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'roi'``.
+    output_path : path-like, optional
+        Path at which to save the masked 4D image. Not saved if not
+        given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     outside_val : float, optional
@@ -460,26 +437,19 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
 
     Returns
     -------
-    concat_img : nib.Nifti1Image
-        4D masked image with contrasts concatenated in the same order as
-        the input.
+    masked_img : nib.Nifti1Image
+        4D masked image with contrasts in the same order as the input.
     meta : dict
         Sidecar of the masked image.
-    new_imgs : dict
-        Mapping of contrast label to its masked 3D image.
     """
-    img, img_meta, img_dict = io_utils.load_contrasts_img(input_path, errors=load_errors)
-    img_input = provenance.describe(input_path, meta if meta is not None else img_meta)
+    img_dict, img_input = _check_contrasts_img(img, meta=meta, load_errors=load_errors)
 
     new_imgs = {}
     for contrast, contrast_img in img_dict.items():
         new_imgs[contrast] = _roi_single_img(contrast_img, regions, atlas=atlas, outside_val=outside_val)
 
     # Concatenate along a new axis to create a 4D image.
-    concat_img = nib.concat_images(list(new_imgs.values()))
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(input_path, suffix=suffix)
+    masked_img = nib.concat_images(list(new_imgs.values()))
 
     atlas_input = _atlas_input(atlas)
     meta = provenance.record_step(
@@ -495,9 +465,54 @@ def roi_images(input_path, regions, meta=None, atlas='destrieux_2009', output_pa
     )
 
     if output_path:
-        io_utils.save_image(concat_img, output_path, meta=meta)
+        io_utils.save_image(masked_img, output_path, meta=meta)
 
-    return concat_img, meta, new_imgs
+    return masked_img, meta
+
+
+def roi_per_contrast(img, contrast_regions, atlas, meta=None, output_path=None, load_errors='raise', outside_val=np.nan):
+    """
+    Mask selected contrasts of a 4D image, each with its own atlas
+    regions, and stack them into a new 4D image.
+
+    Parameters
+    ----------
+    img : path-like or nib.Nifti1Image
+        4D image whose volumes are labelled by ``volume_labels`` in its
+        sidecar.
+    contrast_regions : dict
+        Mapping of contrast label to the atlas region names to retain
+        for it. Only these contrasts are kept, in this order.
+    atlas : str or path-like
+        nilearn atlas name or path to a NIfTI atlas, see
+        :func:`get_roi_mask`.
+    meta : dict, optional
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the 4D image. Not saved if not given.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+    outside_val : float, optional
+        Value given to voxels outside each contrast's regions. Default
+        is NaN.
+
+    Returns
+    -------
+    masked_img : nib.Nifti1Image
+        4D image with one volume per contrast in ``contrast_regions``.
+    meta : dict
+        Its sidecar, with the contrasts as ``volume_labels``.
+    """
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+    labels = img_input[1]['volume_labels']
+    masked = [
+        roi_single_image(img, regions=regions, meta=img_input[1], contrast_idx=labels.index(contrast),
+                         atlas=atlas, outside_val=outside_val)
+        for contrast, regions in contrast_regions.items()
+    ]
+    return concat_images([m[0] for m in masked], metas=[m[1] for m in masked],
+                         labels=list(contrast_regions), output_path=output_path)
 
 
 def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_data=None):
@@ -535,38 +550,36 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_d
     return nib.Nifti1Image(masked_data, affine=img.affine)
 
 
-def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, contrast_idx=None, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan, mask_img=None):
+def threshold_single_image(img, thresh_img, meta=None, thresh_img_meta=None, alpha=0.05, contrast_idx=None, output_path=None, load_errors='raise', thresh_val=np.nan, mask_img=None):
     """
     Threshold a single image using a p-value map.
 
     Parameters
     ----------
-    img_to_thresh : path-like or nib.Nifti1Image
-        Image to threshold (e.g. a z-score map).
+    img : path-like or nib.Nifti1Image
+        Image to threshold (e.g. a z-score map), 3D or 4D (see
+        ``contrast_idx``).
     thresh_img : path-like or nib.Nifti1Image
-        Corresponding p-value image used as the threshold mask. Its
-        sidecar is loaded from disk if it is a path.
+        Corresponding p-value image used as the threshold mask.
     meta : dict, optional
-        Sidecar of ``img_to_thresh``. Required to keep the provenance of
-        in-memory images; loaded from disk for paths if not given.
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
+    thresh_img_meta : dict, optional
+        Sidecar of ``thresh_img``, as for ``meta``.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
     contrast_idx : int, optional
         Index of the contrast to threshold when the inputs are 4D.
-    output_path : path-like or None, optional
-        Path at which to save the thresholded image. If ``None`` a
-        default path is derived from ``img_to_thresh`` and ``suffix``.
-        Pass ``False`` to suppress saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'thresholded'``.
+    output_path : path-like, optional
+        Path at which to save the thresholded image. Not saved if not
+        given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     thresh_val : float, optional
         Value given to voxels above ``alpha``. Default is NaN.
     mask_img : path-like or nib.Nifti1Image, optional
         Brain mask; voxels outside it are set to ``0``. Resampled to
-        ``img_to_thresh`` if needed.
+        ``img`` if needed.
 
     Returns
     -------
@@ -575,18 +588,15 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     meta : dict
         Sidecar of the thresholded image.
     """
-    est_img, est_input = _check_input_img(img_to_thresh, meta=meta, load_errors=load_errors)
+    est_img, est_input = _check_input_img(img, meta=meta, load_errors=load_errors)
     est_img = _select_contrast_img(est_img, contrast_idx=contrast_idx)
 
-    p_img, p_input = _check_input_img(thresh_img, load_errors=load_errors)
+    p_img, p_input = _check_input_img(thresh_img, meta=thresh_img_meta, load_errors=load_errors)
     p_img = _select_contrast_img(p_img, contrast_idx=contrast_idx)
 
     mask_data, mask_input = _prepare_mask(est_img, mask_img=mask_img, load_errors=load_errors)
 
     masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(img_to_thresh, suffix=suffix)
 
     meta = provenance.record_step(
         'volume.threshold_single_image',
@@ -601,69 +611,63 @@ def threshold_single_image(img_to_thresh, thresh_img, meta=None, alpha=0.05, con
     return masked_img, meta
 
 
-def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_path=None, suffix='thresholded', load_errors='raise', thresh_val=np.nan, mask_img=None):
+def threshold_images(img, thresh_img, meta=None, thresh_img_meta=None, alpha=0.05, output_path=None, load_errors='raise', thresh_val=np.nan, mask_img=None):
     """
     Threshold a 4D image using a p-value image, contrast by contrast.
 
-    If ``thresh_img`` is 4D, its contrasts must match those of
-    ``img_to_thresh``. If it is 3D, the same threshold map is applied to
-    every contrast.
+    If ``thresh_img`` is 4D, its contrasts must match those of ``img``.
+    If it is 3D, the same threshold map is applied to every contrast.
 
     Parameters
     ----------
-    img_to_thresh : path-like
-        Path to a 4D image to threshold (e.g. z-score maps), with
+    img : path-like or nib.Nifti1Image
+        4D image to threshold (e.g. z-score maps), with
         ``volume_labels`` in its sidecar.
-    thresh_img : path-like
-        Path to the p-value image used as the threshold mask. May be 3D
-        (applied to all contrasts) or 4D (matched per contrast label).
+    thresh_img : path-like or nib.Nifti1Image
+        p-value image used as the threshold mask. May be 3D (applied to
+        all contrasts) or 4D (matched per contrast label).
     meta : dict, optional
-        Sidecar of ``img_to_thresh``. Loaded from disk if not given.
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
+    thresh_img_meta : dict, optional
+        Sidecar of ``thresh_img``, as for ``meta``. Required for an
+        in-memory 4D ``thresh_img``.
     alpha : float, optional
         Significance threshold. Default is ``0.05``.
-    output_path : path-like or None, optional
-        Path at which to save the thresholded 4D image. If ``None`` a
-        default path is derived from ``img_to_thresh`` and ``suffix``.
-        Pass ``False`` to suppress saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'thresholded'``.
+    output_path : path-like, optional
+        Path at which to save the thresholded 4D image. Not saved if not
+        given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     thresh_val : float, optional
         Value given to voxels above ``alpha``. Default is NaN.
     mask_img : path-like or nib.Nifti1Image, optional
         Brain mask; voxels outside it are set to ``0``. Resampled to
-        ``img_to_thresh`` if needed.
+        ``img`` if needed.
 
     Returns
     -------
-    concat_img : nib.Nifti1Image
+    thresholded_img : nib.Nifti1Image
         4D thresholded image with contrasts in the same order as the
         input.
     meta : dict
         Sidecar of the thresholded image.
-    new_imgs : dict
-        Mapping of contrast label to its thresholded 3D image.
 
     Raises
     ------
     ValueError
         If both images are 4D but their contrast labels do not match.
     """
-    est_img, est_meta, est_dict = io_utils.load_contrasts_img(img_to_thresh, errors=load_errors)
-    est_input = provenance.describe(img_to_thresh, meta if meta is not None else est_meta)
-    p_img = nib.load(thresh_img)
+    est_dict, est_input = _check_contrasts_img(img, meta=meta, load_errors=load_errors)
+    p_img, p_input = _check_input_img(thresh_img, meta=thresh_img_meta, load_errors=load_errors)
 
     if p_img.ndim == 4:
-        _, p_meta, p_dict = io_utils.load_contrasts_img(thresh_img, errors=load_errors)
+        p_dict, p_input = _check_contrasts_img(p_img, meta=p_input[1], load_errors=load_errors)
         if set(p_dict.keys()) != set(est_dict.keys()):
             raise ValueError('Threshold image contrasts do not match target image contrasts.')
-        p_input = provenance.describe(thresh_img, p_meta)
     else:
-        logger.warning(f'Thresholding image {thresh_img} is 3D. Applying same threshold to all contrasts in {img_to_thresh}.')
+        logger.warning('Thresholding image is 3D. Applying the same threshold to all contrasts.')
         p_dict = {contrast: p_img for contrast in est_dict.keys()}
-        p_input = provenance.describe(thresh_img)
 
     new_imgs = {}
     for contrast, est_contrast_img in est_dict.items():
@@ -672,10 +676,7 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
         new_imgs[contrast] = _threshold_single_img(est_contrast_img, p_contrast_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     # Concatenate along a new axis to create a 4D image.
-    concat_img = nib.concat_images(list(new_imgs.values()))
-
-    if output_path is None:
-        output_path = io_utils.get_output_path(img_to_thresh, suffix=suffix)
+    thresholded_img = nib.concat_images(list(new_imgs.values()))
 
     meta = provenance.record_step(
         'volume.threshold_images',
@@ -686,12 +687,33 @@ def threshold_images(img_to_thresh, thresh_img, meta=None, alpha=0.05, output_pa
     )
 
     if output_path:
-        io_utils.save_image(concat_img, output_path, meta=meta)
+        io_utils.save_image(thresholded_img, output_path, meta=meta)
 
-    return concat_img, meta, new_imgs
+    return thresholded_img, meta
 
 
-def apply_across_volumes(img, func, mask_img=None, meta=None, output_path=None, suffix='apply', load_errors='raise', **func_kwargs):
+def _apply_across_volumes(img, func, mask_data, **func_kwargs):
+    """
+    Apply ``func`` to the 4th-dimension values of every voxel in
+    ``mask_data``; see :func:`apply_across_volumes`.
+
+    Returns
+    -------
+    nib.Nifti1Image
+        3D float32 image of ``func`` results, ``0`` outside the mask.
+    """
+    data = img.get_fdata()  # (x, y, z, t)
+    data_2d = data[mask_data, :]  # (n_voxels, t)
+
+    result_1d = np.apply_along_axis(func, axis=1, arr=data_2d, **func_kwargs)  # (n_voxels,)
+    # Put back into volume but use 3D.
+    result_3d = np.full(img.shape[:3], 0.0, dtype=np.float32)
+    result_3d[mask_data] = result_1d
+
+    return nib.Nifti1Image(result_3d, img.affine, img.header)
+
+
+def apply_across_volumes(img, func, mask_img=None, meta=None, output_path=None, load_errors='raise', **func_kwargs):
     """
     Apply a function to the 4th-dimension values of every voxel.
 
@@ -711,14 +733,8 @@ def apply_across_volumes(img, func, mask_img=None, meta=None, output_path=None, 
     meta : dict, optional
         Sidecar of ``img``. Required to keep the provenance of in-memory
         images; loaded from disk for paths if not given.
-    output_path : path-like or None, optional
-        Path at which to save the result. If ``None`` a default path is
-        derived from the filename of ``img`` and ``suffix`` (nothing is
-        saved if ``img`` has no filename). Pass ``False`` to suppress
-        saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'apply'``.
+    output_path : path-like, optional
+        Path at which to save the result. Not saved if not given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     **func_kwargs
@@ -741,23 +757,7 @@ def apply_across_volumes(img, func, mask_img=None, meta=None, output_path=None, 
         raise ValueError(f'img must be 4D, got {img.ndim}D.')
 
     mask_data, mask_input = _prepare_mask(img, mask_img, load_errors=load_errors)
-
-    data = img.get_fdata()  # (x, y, z, t)
-    data_2d = data[mask_data, :]  # (n_voxels, t)
-
-    result_1d = np.apply_along_axis(func, axis=1, arr=data_2d, **func_kwargs)  # (n_voxels,)
-    # Put back into volume but use 3D.
-    result_3d = np.full(img.shape[:3], 0.0, dtype=np.float32)
-    result_3d[mask_data] = result_1d
-
-    result_img = nib.Nifti1Image(result_3d, img.affine, img.header)
-
-    if output_path is None:
-        if img.get_filename() is None:
-            logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
-            output_path = False
-        else:
-            output_path = io_utils.get_output_path(img, suffix=suffix)
+    result_img = _apply_across_volumes(img, func, mask_data, **func_kwargs)
 
     meta = provenance.record_step(
         'volume.apply_across_volumes',
@@ -785,10 +785,9 @@ def concat_images(imgs, metas=None, labels=None, output_path=None):
         in-memory images.
     labels : list of str, optional
         Label of each volume. Saved as ``volume_labels`` so the result
-        can be read with ``io_utils.load_contrasts_img``.
-    output_path : path-like or None, optional
-        Path at which to save the 4D image. Pass ``None``/``False`` to
-        suppress saving.
+        can be used as a 4D image of contrasts.
+    output_path : path-like, optional
+        Path at which to save the 4D image. Not saved if not given.
 
     Returns
     -------
@@ -821,10 +820,10 @@ def concat_images(imgs, metas=None, labels=None, output_path=None):
     return concat_img, meta
 
 
-def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, only_positive=True):
+def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=None, only_positive=True):
     """
     Winner-take-all function to be applied with
-    :func:`apply_across_volumes`.
+    :func:`apply_across_volumes` (or see :func:`winner_take_all`).
 
     Returns the 1-based index of the largest valid value, so that ``0``
     can be used for outside the ROI. A value is valid if it is neither
@@ -844,7 +843,7 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
         are treated as below threshold.
     no_result_idx : int, optional
         Value returned when the voxel is inside the ROI but has no valid
-        value. Default is ``-1``.
+        value. Default is one more than the number of contrasts.
     only_positive : bool, optional
         If ``True``, negative values are not considered valid. Default
         is ``True``.
@@ -858,6 +857,8 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
         the largest valid value plus one.
     """
     data = np.asarray(data)
+    if no_result_idx is None:
+        no_result_idx = data.size + 1
 
     if np.isnan(below_thresh_val) and np.isnan(outside_val):
         # Can't distinguish outside from below_thresh; use data as is.
@@ -877,7 +878,7 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
     valid = ~outside & ~below_thresh & positive_filter
     if not valid.any():
         return no_result_idx
-    
+
     # Use argmax only on the valid data (inside ROI and above threshold
     # ). Make sure to get the max index from the original data.
     valid_indices = np.where(valid)[0]
@@ -885,41 +886,103 @@ def wta(data, below_thresh_val=np.nan, outside_val=np.nan, no_result_idx=-1, onl
     if np.nansum(valid_data) == 0:
         return 0
     max_valid_idx = np.argmax(valid_data)
-    
+
     return valid_indices[max_valid_idx] + 1  # +1 to reserve 0 for outside ROI
 
 
-def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, suffix='segmentation', load_errors='raise', color_palette=None):
+def winner_take_all(img, mask_img=None, meta=None, output_path=None, below_thresh_val=np.nan, outside_val=np.nan, only_positive=True, outside_label='Outside ROI', no_result_label='Rest', load_errors='raise'):
     """
-    Save an image as an integer segmentation.
+    Label every voxel with the contrast that has the largest value.
 
-    The data are cast to int16 and resampled with nearest-neighbour
-    interpolation onto ``template``. If ``labels`` are given they are
-    stored in the sidecar and an ITK-SNAP label description file
-    (``<output>_labels.txt``) is written next to the image.
+    Applies :func:`wta` to every voxel of a 4D image of contrasts. The
+    result has ``0`` outside the ROI, ``1..n`` for the n contrasts, and
+    ``n + 1`` for voxels inside the ROI where no contrast is valid. The
+    names of these labels are recorded as ``labels`` in the sidecar, so
+    that later steps (segmentations, plots) can use them.
 
     Parameters
     ----------
     img : path-like or nib.Nifti1Image
-        Image to save as a segmentation. If a path is given, the image
-        is loaded from disk.
+        4D image whose volumes are labelled by ``volume_labels`` in its
+        sidecar (e.g. from :func:`roi_per_contrast`).
+    mask_img : path-like or nib.Nifti1Image, optional
+        Brain mask. Resampled to ``img`` if needed. Voxels outside are
+        set to ``0``. Default is to use all voxels.
+    meta : dict, optional
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the label image. Not saved if not given.
+    below_thresh_val, outside_val, only_positive
+        See :func:`wta`.
+    outside_label : str, optional
+        Name of label ``0``. Default is ``'Outside ROI'``.
+    no_result_label : str, optional
+        Name of label ``n + 1``. Default is ``'Rest'``.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    wta_img : nib.Nifti1Image
+        3D float32 label image.
+    meta : dict
+        Its sidecar, with the label names as ``labels``.
+    """
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+    img_dict, _ = _check_contrasts_img(img, meta=img_input[1], load_errors=load_errors)
+    contrasts = list(img_dict)
+    no_result_idx = len(contrasts) + 1
+
+    mask_data, mask_input = _prepare_mask(img, mask_img, load_errors=load_errors)
+    wta_img = _apply_across_volumes(
+        img, wta, mask_data, below_thresh_val=below_thresh_val, outside_val=outside_val,
+        no_result_idx=no_result_idx, only_positive=only_positive
+    )
+
+    labels = {'0': outside_label, **{str(idx + 1): c for idx, c in enumerate(contrasts)},
+              str(no_result_idx): no_result_label}
+    meta = provenance.record_step(
+        'volume.winner_take_all',
+        inputs={'img': img_input, 'mask': mask_input},
+        parameters={'below_thresh_val': below_thresh_val, 'outside_val': outside_val,
+                    'only_positive': only_positive},
+        output_path=output_path,
+        fields={'labels': labels}
+    )
+
+    if output_path:
+        io_utils.save_image(wta_img, output_path, meta=meta)
+
+    return wta_img, meta
+
+
+def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, load_errors='raise', color_palette=None):
+    """
+    Convert an image into an integer segmentation.
+
+    The data are cast to int16 and resampled with nearest-neighbour
+    interpolation onto ``template``. The label names are stored in the
+    sidecar and, if the segmentation is saved, an ITK-SNAP label
+    description file (``<output>_labels.txt``) is written next to it.
+
+    Parameters
+    ----------
+    img : path-like or nib.Nifti1Image
+        Label image (e.g. from :func:`winner_take_all`).
     meta : dict, optional
         Sidecar of ``img``. Required to keep the provenance of in-memory
-        images.
+        images; loaded from disk for paths if not given.
     template : path-like, nib.Nifti1Image or False, optional
         Image defining the output grid. Defaults to the 1mm MNI152
         template from nilearn. Pass ``False`` to keep the input grid.
     labels : dict or list, optional
         Label names, either a mapping of label value to name or a list
-        indexed by label value.
-    output_path : path-like or None, optional
-        Path at which to save the segmentation image. If ``None`` a
-        default path is derived from the filename of ``img`` and
-        ``suffix`` (nothing is saved if ``img`` has no filename). Pass
-        ``False`` to suppress saving.
-    suffix : str, optional
-        Suffix appended to the filename when generating a default output
-        path. Default is ``'segmentation'``.
+        indexed by label value. Defaults to the ``labels`` recorded in
+        the sidecar of ``img``.
+    output_path : path-like, optional
+        Path at which to save the segmentation image. Not saved if not
+        given.
     load_errors : {'raise', 'warn'}, optional
         How to handle loading errors. Default is ``'raise'``.
     color_palette : dict or callable, optional
@@ -936,6 +999,8 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         Sidecar of the segmentation.
     """
     img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+    if labels is None and _labels(img_input[1]) is not None:
+        labels = {int(k): v for k, v in _labels(img_input[1]).items()}
 
     out_img = nib.Nifti1Image(
         img.get_fdata().astype(np.int16),
@@ -966,13 +1031,6 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         meta_labels = {str(k): v for k, v in labels.items()}
     else:
         meta_labels = labels
-
-    if output_path is None:
-        if img.get_filename() is None:
-            logger.warning('Input image has no filename and `ouput_path` has not been provided. Cannot derive output path. Not saving output image.')
-            output_path = False
-        else:
-            output_path = io_utils.get_output_path(img, suffix=suffix)
 
     labels_output_path = None
     if labels is not None and output_path:
@@ -1033,11 +1091,11 @@ def _save_itksnap_label_description(labels, output_path=None, color_palette=None
             ]
             idx = hash(label) % len(default_colors)
             return default_colors[idx]
-        
+
     def _hex_to_rgb(hex_color):
         hex_color = hex_color.lstrip('#')
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-    
+
     if not isinstance(labels, dict):
         labels = {idx: lab for idx, lab in enumerate(labels)}
 

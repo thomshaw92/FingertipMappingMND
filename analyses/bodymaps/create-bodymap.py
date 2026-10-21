@@ -272,17 +272,16 @@ def run_projection(step, ctx):
 def run_fsaverage(step, ctx):
     sphere = step.hemi_inputs('sphere')
     midthickness = step.hemi_inputs('midthickness')
-    output = step.hemi_outputs('fsaverage_labels')
-    for hemi in HEMIS:
-        surface.transform_surface_to_fsaverage(
-            step.input('projected'),
-            sphere[hemi],
-            midthickness[hemi],
-            hemi=hemi,
-            standard_surface=ctx.fsaverage,
-            output_path=output[hemi],
-            **step.params
-        )
+    surface.transform_surface_to_fsaverage(
+        step.input('projected'),
+        left_sphere=sphere['left'],
+        right_sphere=sphere['right'],
+        left_midthickness=midthickness['left'],
+        right_midthickness=midthickness['right'],
+        standard_surface=ctx.fsaverage,
+        output_path=step.output('fsaverage_labels'),
+        **step.params
+    )
 
 
 def run_plot_mni(step, ctx):
@@ -300,7 +299,7 @@ def run_plot_mni(step, ctx):
 
 def run_plot_fsaverage(step, ctx):
     plotting.make_plot(
-        step.hemi_inputs('labels'),
+        step.input('labels'),
         output_path=step.output('plot'),
         standard_surface=ctx.fsaverage,
         mesh='pial',
@@ -325,7 +324,7 @@ def run_views_mni(step, ctx):
 
 def run_views_fsaverage(step, ctx):
     plotting.plot_lateral_medial(
-        step.hemi_inputs('labels'),
+        step.input('labels'),
         output_path=step.output('plot'),
         labels=ctx.plot_labels,
         colors=ctx.colors,
@@ -337,7 +336,7 @@ def run_views_fsaverage(step, ctx):
 
 def run_html(step, ctx):
     plotting.make_html(
-        step.hemi_inputs('fsaverage_labels'),
+        step.input('fsaverage_labels'),
         output_path=step.output('html'),
         standard_surface=ctx.fsaverage,
         mesh='pial',
@@ -383,7 +382,7 @@ extra_params : set of str
 """
 
 _PLOT_SET_BY_SCRIPT = {
-    'surf_file', 'meta', 'output_path', 'standard_surface', 'mesh', 'mesh_meta', 'engine', 'cmap',
+    'surf', 'meta', 'output_path', 'standard_surface', 'mesh', 'mesh_meta', 'engine', 'cmap',
     'cmap_bg_first', 'colorbar', 'colorbar_labels', 'vmin', 'vmax'
 }
 # plotting.plot_lateral_medial sets these for each of its panels.
@@ -392,30 +391,31 @@ _VIEWS_SET_BY_SCRIPT = {'labels', 'colors', 'hemi', 'view', 'axes'}
 STEP_TYPES = {
     'correction': StepType(
         run_correction, ('p_values', 'mask'), ('corrected',), volume.correct_images,
-        {'file_in', 'meta', 'output_path', 'mask_img', 'suffix', 'load_errors'}, set()),
+        {'img', 'meta', 'output_path', 'mask_img', 'load_errors'}, set()),
     'thresholding': StepType(
         run_thresholding, ('z_score', 'p_values', 'mask'), ('thresholded',), volume.threshold_images,
-        {'img_to_thresh', 'thresh_img', 'meta', 'output_path', 'thresh_val', 'mask_img', 'suffix', 'load_errors'}, set()),
+        {'img', 'thresh_img', 'meta', 'thresh_img_meta', 'output_path', 'thresh_val', 'mask_img', 'load_errors'}, set()),
     'roi': StepType(
         run_roi, ('stats', 'atlas'), ('rois',), volume.roi_single_image,
-        {'input_path', 'regions', 'meta', 'contrast_idx', 'atlas', 'output_path', 'suffix', 'load_errors', 'outside_val'}, set()),
+        {'img', 'regions', 'meta', 'contrast_idx', 'atlas', 'output_path', 'load_errors', 'outside_val'}, set()),
     'wta': StepType(
         run_wta, ('rois', 'mask'), ('wta',), volume.wta,
         {'data', 'below_thresh_val', 'outside_val', 'no_result_idx'}, set()),
     'segmentation': StepType(
         run_segmentation, ('wta', 'template'), ('segmentation',), volume.save_as_segmentation,
-        {'img', 'meta', 'template', 'labels', 'output_path', 'suffix', 'load_errors', 'color_palette'}, set()),
+        {'img', 'meta', 'template', 'labels', 'output_path', 'load_errors', 'color_palette'}, set()),
     'mni_surfaces': StepType(
         run_mni_surfaces, ('native_surface', 'xfm'), ('mni_surface',), surface.transform_surface_to_mni,
-        {'left_surf', 'right_surf', 'xfm_t1w_mni', 'output_path', 'meta'}, {'surfaces'}),
+        {'left_surf', 'right_surf', 'xfm_t1w_mni', 'output_path'}, {'surfaces'}),
     'projection': StepType(
         run_projection, ('volume', 'pial', 'white', 'atlas'), ('projected',), surface.project_image,
-        {'img_to_project', 'meta', 'output_path', 'mesh', 'inner_mesh', 'mesh_meta', 'inner_mesh_meta', 'atlas'},
+        {'img', 'meta', 'output_path', 'mesh', 'inner_mesh', 'mesh_meta', 'inner_mesh_meta', 'atlas'},
         {'hemi_regions'}),
     'fsaverage': StepType(
         run_fsaverage, ('projected', 'sphere', 'midthickness'), ('fsaverage_labels',),
         surface.transform_surface_to_fsaverage,
-        {'surf_file', 'surf_sphere', 'subject_midthickness', 'hemi', 'standard_surface', 'output_path', 'meta'}, set()),
+        {'surf', 'left_sphere', 'right_sphere', 'left_midthickness', 'right_midthickness', 'standard_surface',
+         'output_path', 'meta'}, set()),
     'plot_mni': StepType(
         run_plot_mni, ('projected', 'pial'), ('plot',), plotting.make_plot, _PLOT_SET_BY_SCRIPT, set()),
     'plot_fsaverage': StepType(

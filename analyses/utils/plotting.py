@@ -1,5 +1,10 @@
 """
 Static and interactive plots of surface data.
+
+See ``_common`` for the conventions all public functions follow. For
+label images whose sidecar records label names (e.g. from
+``volume.winner_take_all``), plots use those names for the colorbar
+unless told otherwise.
 """
 import os
 from pathlib import Path
@@ -18,40 +23,38 @@ from nilearn.surface import SurfaceImage
 
 import io_utils
 import provenance
-from _common import _default_surface_output_path
+from _common import _check_input_mesh, _check_input_surface, _labels
 
 
-def _surface_inputs(surf_file, meta=None):
+def _surface_inputs(surf, meta=None):
     """
     Load surface data for plotting and describe it for provenance.
 
     Parameters
     ----------
-    surf_file : path-like or dict
-        Base path of a surface image saved with
+    surf : SurfaceImage, path-like or dict
+        Surface image, the base path of one saved with
         ``io_utils.save_surface``, or a dict with ``'left'``/``'right'``
         keys holding paths to per-hemi GIFTI files or arrays.
     meta : dict, optional
-        Sidecar of ``surf_file``, or for a dict input either one sidecar
-        for both hemispheres or a dict of per-hemi sidecars. Loaded from
+        Sidecar of ``surf``, or for a dict input either one sidecar for
+        both hemispheres or a dict of per-hemi sidecars. Loaded from
         disk for paths if not given.
 
     Returns
     -------
     surface : SurfaceImage or dict
-        The loaded surface image for a path input, or a dict of per-hemi
-        arrays for a dict input.
+        The surface image, or a dict of per-hemi arrays for a dict
+        input.
     inputs : dict
         Inputs for ``provenance.record_step``.
     """
-    if isinstance(surf_file, (Path, str)):
-        surface_image, surf_meta = io_utils.load_surface(surf_file)
-        if meta is not None:
-            surf_meta = meta
-        return surface_image, {'surface': provenance.describe(surf_file, surf_meta)}
+    if not isinstance(surf, dict):
+        surface_image, surf_input = _check_input_surface(surf, meta=meta)
+        return surface_image, {'surface': surf_input}
 
     data, inputs = {}, {}
-    for hemi, hemi_data in surf_file.items():
+    for hemi, hemi_data in surf.items():
         hemi_meta = meta.get(hemi) if isinstance(meta, dict) and hemi in meta else meta
         if isinstance(hemi_data, (Path, str)):
             inputs[hemi] = provenance.describe(hemi_data, hemi_meta)
@@ -62,7 +65,19 @@ def _surface_inputs(surf_file, meta=None):
     return data, inputs
 
 
-def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+def _label_names(inputs):
+    """
+    Names of labels ``1..n`` recorded in the sidecar of the plotted
+    surface, ``None`` if there are none.
+    """
+    surf_input = inputs.get('surface') or inputs.get('left') or (None, None)
+    labels = _labels(surf_input[1])
+    if not labels:
+        return None
+    return [labels[key] for key in sorted(labels, key=int) if int(key) > 0]
+
+
+def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
     """
     Plot a surface image without saving it.
 
@@ -79,29 +94,34 @@ def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inf
     parameters : dict
         Plotting parameters for ``provenance.record_step``.
     """
+    mesh, mesh_name, mesh_input = _check_input_mesh(mesh, mesh_meta, standard_surface, verbose)
+    if mesh_name is not None:
+        # fsaverage meshes come with a sulcal map to show underneath.
+        with io_utils.optional_silent_print(verbose):
+            fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh_name)
+    else:
+        fsaverage_data = None
+
+    surface_image, inputs = _surface_inputs(surf, meta=meta)
+    if not isinstance(surface_image, SurfaceImage):
+        surface_image = SurfaceImage(mesh=mesh, data=surface_image)
+    inputs['mesh'] = mesh_input
+
+    # Label images: use the recorded label names for the colorbar.
+    if colorbar_labels is None:
+        colorbar_labels = _label_names(inputs)
+        if colorbar_labels is not None:
+            kwargs.setdefault('vmin', 1)
+            kwargs.setdefault('vmax', len(colorbar_labels))
+
     parameters = {
-        'standard_surface': standard_surface if isinstance(mesh, str) else None,
-        'mesh': mesh if isinstance(mesh, str) else None,
+        'standard_surface': standard_surface if mesh_name else None,
+        'mesh': mesh_name,
         'colorbar_labels': colorbar_labels,
         'cmap': cmap,
         'cmap_bg_first': cmap_bg_first,
         **kwargs
     }
-
-    if isinstance(mesh, str):
-        with io_utils.optional_silent_print(verbose):
-            fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
-            fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh)
-            mesh = fsaverage[mesh]
-        mesh_input = None
-    else:
-        fsaverage_data = None
-        mesh_input = (None, mesh_meta)
-
-    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
-    if not isinstance(surface_image, SurfaceImage):
-        surface_image = SurfaceImage(mesh=mesh, data=surface_image)
-    inputs['mesh'] = mesh_input
 
     if 'vmin' not in kwargs or 'vmax' not in kwargs:
         # Set vmin/vmax based on the data range across both hemispheres.
@@ -166,62 +186,41 @@ def _plot_surface(surf_file, meta=None, standard_surface='fsaverage6', mesh='inf
     return display, inputs, parameters
 
 
-def _plot_contrast(inputs):
-    """
-    Return the contrast of the projected image a plot is made from.
-
-    Parameters
-    ----------
-    inputs : dict
-        Inputs as returned by :func:`_surface_inputs`.
-
-    Returns
-    -------
-    str
-        The ``contrast`` parameter of the step that produced the
-        surface, or ``'unknown_contrast'``.
-    """
-    surf_input = inputs.get('surface') or inputs.get('left') or (None, None)
-    return provenance.last_step(surf_input[1]).get('parameters', {}).get('contrast') or 'unknown_contrast'
-
-
-def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
     """
     Create a static surface stat-map plot.
 
     Parameters
     ----------
-    surf_file : path-like or dict
-        Base path of a surface image created by
-        :func:`surface.project_image` (or saved with
-        ``io_utils.save_surface``), or a dict with
+    surf : SurfaceImage, path-like or dict
+        Surface image (e.g. from ``surface.project_image``), the base
+        path of one saved with ``io_utils.save_surface``, or a dict with
         ``'left'``/``'right'`` keys holding per-hemi GIFTI paths or
         arrays.
     meta : dict, optional
-        Sidecar of ``surf_file`` (or a dict of per-hemi sidecars).
-        Loaded from disk for paths if not given.
-    output_path : path-like or None, optional
-        Path at which to save the plot. If ``None`` the file is saved in
-        a ``plots/`` folder adjacent to the parent of ``surf_file`` (the
-        left hemisphere file for a dict) as
-        ``<input name>_<surface>_<contrast>.png``, see
-        :func:`_common._default_surface_output_path`. Pass ``False`` to
-        suppress saving.
+        Sidecar of ``surf`` (or a dict of per-hemi sidecars). Required
+        to keep the provenance of in-memory surfaces; loaded from disk
+        for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the plot. Not saved if not given.
     standard_surface : str, optional
-        fsaverage resolution used when ``mesh`` is a string. Default is
-        ``'fsaverage6'``.
-    mesh : str or nilearn.surface.PolyMesh, optional
-        Mesh to plot on. A string selects a mesh of the
-        ``standard_surface`` fsaverage, which also provides the sulcal
-        background. Default is ``'inflated'``.
+        fsaverage resolution used when ``mesh`` is a mesh name. Default
+        is ``'fsaverage6'``.
+    mesh : str, path-like or nilearn.surface.PolyMesh, optional
+        Mesh to plot on: a mesh name of the ``standard_surface``
+        fsaverage, which also provides the sulcal background, the base
+        path of a saved mesh, or a mesh in memory. Default is
+        ``'inflated'``.
     verbose : bool, optional
         If ``False``, suppress nilearn's printed output. Default is
         ``False``.
     colorbar_labels : list of str, optional
         Tick labels for the integer values ``vmin``..``vmax``. If given,
         the colorbar is drawn as discrete colour blocks, one per label
-        (for label data such as WTA maps). If not given, nilearn's
-        continuous colorbar is used.
+        (for label data such as WTA maps). Defaults to the label names
+        recorded in the sidecar of ``surf`` (with ``vmin``/``vmax``
+        then defaulting to ``1``/the number of labels); without any,
+        nilearn's continuous colorbar is used.
     cmap : str, list or matplotlib colormap, optional
         Colormap. A list of colours is turned into a ``ListedColormap``.
     cmap_bg_first : bool, optional
@@ -229,7 +228,8 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         background and is dropped from the plot and colorbar. Default is
         ``False``.
     mesh_meta : dict, optional
-        Sidecar of ``mesh`` when it is an in-memory mesh.
+        Sidecar of ``mesh`` when it is a mesh in memory; loaded from
+        disk for paths if not given.
     **kwargs
         Additional keyword arguments passed to
         ``nilearn.plotting.plot_surf_stat_map``. ``vmin``/``vmax``
@@ -243,13 +243,9 @@ def make_plot(surf_file, meta=None, output_path=None, standard_surface='fsaverag
         Sidecar of the plot.
     """
     display, inputs, parameters = _plot_surface(
-        surf_file, meta=meta, standard_surface=standard_surface, mesh=mesh, verbose=verbose,
+        surf, meta=meta, standard_surface=standard_surface, mesh=mesh, verbose=verbose,
         colorbar_labels=colorbar_labels, cmap=cmap, cmap_bg_first=cmap_bg_first, mesh_meta=mesh_meta, **kwargs
     )
-    contrast = _plot_contrast(inputs)
-
-    if output_path is None:
-        output_path = _default_surface_output_path(surf_file, 'plots', standard_surface, mesh, contrast, '.png')
 
     meta = provenance.record_step('plotting.make_plot', inputs=inputs, parameters=parameters, output_path=output_path)
 
@@ -290,23 +286,16 @@ def make_html(*args, legacy=False, **kwargs):
         return _surf_plot_html(*args, **kwargs)
 
 
-def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, atlas=None, **kwargs):
+def _surf_plot_html(surf, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, **kwargs):
     """
     Create an interactive (plotly) HTML surface plot.
 
     Parameters
     ----------
-    surf_file, meta, standard_surface, mesh, verbose
+    surf, meta, standard_surface, mesh, verbose
         See :func:`make_plot`.
-    output_path : path-like or None, optional
-        Path at which to save the HTML file. If ``None`` the file is
-        saved in an ``htmls/`` folder adjacent to the parent of
-        ``surf_file`` (the left hemisphere file for a dict) as
-        ``<input name>_<surface>_<contrast>.html``, see
-        :func:`_common._default_surface_output_path`. Pass ``False`` to
-        suppress saving.
-    atlas : optional
-        Unused.
+    output_path : path-like, optional
+        Path at which to save the HTML file. Not saved if not given.
     **kwargs
         Other arguments of :func:`make_plot` (e.g. ``cmap``,
         ``colorbar_labels``, ``mesh_meta``) and of
@@ -321,7 +310,7 @@ def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fs
         Sidecar of the HTML file.
     """
     display, inputs, parameters = _plot_surface(
-        surf_file,
+        surf,
         meta=meta,
         standard_surface=standard_surface,
         mesh=mesh,
@@ -329,8 +318,6 @@ def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fs
         engine='plotly',
         **kwargs
     )
-    if output_path is None:
-        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, mesh, _plot_contrast(inputs), '.html')
 
     meta = provenance.record_step('plotting.make_html', inputs=inputs, parameters=parameters, output_path=output_path)
 
@@ -341,7 +328,7 @@ def _surf_plot_html(surf_file, meta=None, output_path=None, standard_surface='fs
     return display, meta
 
 
-def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standard_surface='fsaverage6', surface_type='inflated', verbose=False, **kwargs):
+def _view_surf_html(surf, meta=None, output_path=None, hemi='left', standard_surface='fsaverage6', surface_type='inflated', verbose=False, **kwargs):
     """
     Create an interactive HTML surface viewer with
     ``nilearn.plotting.view_surf``.
@@ -352,19 +339,13 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
 
     Parameters
     ----------
-    surf_file : path-like or dict
-        Base path of a surface image created by
-        :func:`surface.project_image`, or a dict with
-        ``'left'``/``'right'`` keys, see :func:`make_plot`.
+    surf : SurfaceImage or path-like
+        Surface image on the ``standard_surface`` fsaverage, or the base
+        path of one saved with ``io_utils.save_surface``.
     meta : dict, optional
-        Sidecar of ``surf_file``. Loaded from disk if not given.
-    output_path : path-like or None, optional
-        Path at which to save the HTML file. If ``None`` the file is
-        saved in an ``htmls/`` folder adjacent to the parent of
-        ``surf_file`` (the left hemisphere file for a dict) as
-        ``<input name>_<surface>_<contrast>.html``, see
-        :func:`_common._default_surface_output_path`. Pass ``False`` to
-        suppress saving.
+        Sidecar of ``surf``. Loaded from disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the HTML file. Not saved if not given.
     hemi : {'left', 'right'}, optional
         Hemisphere to display. Default is ``'left'``. The viewer does
         not support plotting both hemispheres at once.
@@ -390,8 +371,7 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
         fsaverage = nilearn.datasets.load_fsaverage(mesh=standard_surface)
         fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=surface_type)
 
-    surface_image, inputs = _surface_inputs(surf_file, meta=meta)
-    contrast = _plot_contrast(inputs)
+    surface_image, inputs = _surface_inputs(surf, meta=meta)
 
     # Automatic vmin/vmax does not work that well in view_surf.
     surface_data = surface_image.data.parts
@@ -413,9 +393,6 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
         **kwargs
     )
 
-    if output_path is None:
-        output_path = _default_surface_output_path(surf_file, 'htmls', standard_surface, surface_type, contrast, '.html')
-
     meta = provenance.record_step(
         'plotting.make_html',
         inputs=inputs,
@@ -435,7 +412,7 @@ def _view_surf_html(surf_file, meta=None, output_path=None, hemi='left', standar
     return view, meta
 
 
-def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **plot_kwargs):
+def _render_view(surf, hemi, view, colors, n_labels, meta=None, dpi=200, **plot_kwargs):
     """
     Render one view of one hemisphere and crop it to the brain.
 
@@ -445,7 +422,7 @@ def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **
 
     Parameters
     ----------
-    surf_file : path-like or dict
+    surf : SurfaceImage, path-like or dict
         Surface image, as accepted by :func:`make_plot`.
     hemi : {'left', 'right'}
         Hemisphere to show.
@@ -456,7 +433,7 @@ def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **
     n_labels : int
         Number of labels; values ``1..n_labels`` are coloured.
     meta : dict, optional
-        Sidecar of ``surf_file``, passed to :func:`make_plot`.
+        Sidecar of ``surf``, passed to :func:`make_plot`.
     dpi : int, optional
         Resolution of the rendering. Default is ``200``.
     **plot_kwargs
@@ -474,9 +451,8 @@ def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **
     ax = fig.add_subplot(projection='3d')
     # No per-view colorbar: the figure gets one shared colorbar.
     _, view_meta = make_plot(
-        surf_file,
+        surf,
         meta=meta,
-        output_path=False,
         hemi=hemi,
         view=view,
         axes=ax,
@@ -499,7 +475,7 @@ def _render_view(surf_file, hemi, view, colors, n_labels, meta=None, dpi=200, **
     return img, view_meta
 
 
-def plot_lateral_medial(surf_file, output_path, labels, colors, meta=None, **plot_kwargs):
+def plot_lateral_medial(surf, colors, output_path=None, labels=None, meta=None, mesh_meta=None, **plot_kwargs):
     """
     Plot lateral and medial views of both hemispheres in a 2x2 figure
     with one shared colorbar.
@@ -509,32 +485,52 @@ def plot_lateral_medial(surf_file, output_path, labels, colors, meta=None, **plo
 
     Parameters
     ----------
-    surf_file : path-like or dict
+    surf : SurfaceImage, path-like or dict
         Surface image of integer labels ``1..len(labels)``, as accepted
         by :func:`make_plot`.
-    output_path : path-like
-        Path of the PNG. A JSON sidecar is written next to it.
-    labels : list of str
-        Name of each label value, starting at ``1``.
     colors : list
         Colours with the background first, i.e. ``len(labels) + 1``
-        colours as in the ``cmap`` config.
+        colours.
+    output_path : path-like, optional
+        Path at which to save the PNG (with a JSON sidecar). Not saved
+        if not given.
+    labels : list of str, optional
+        Name of each label value, starting at ``1``. Defaults to the
+        label names recorded in the sidecar of ``surf``.
     meta : dict, optional
-        Sidecar of ``surf_file``, passed to :func:`make_plot`.
+        Sidecar of ``surf``, passed to :func:`make_plot`. Required to
+        keep the provenance of in-memory surfaces.
+    mesh_meta : dict, optional
+        Sidecar of ``mesh`` (in ``plot_kwargs``) when it is a mesh in
+        memory.
     **plot_kwargs
-        Passed to :func:`make_plot` (e.g. ``mesh``, ``mesh_meta``,
+        Passed to :func:`make_plot` (e.g. ``mesh``,
         ``standard_surface``, ``avg_method``).
 
     Returns
     -------
+    fig : matplotlib.figure.Figure
+        The figure.
     meta : dict
         Sidecar of the figure.
+
+    Raises
+    ------
+    ValueError
+        If ``labels`` is not given and the sidecar of ``surf`` records
+        none.
     """
+    if labels is None:
+        _, inputs = _surface_inputs(surf, meta=meta)
+        labels = _label_names(inputs)
+        if labels is None:
+            raise ValueError('Pass `labels`: the sidecar of `surf` does not record label names.')
+
     panels, panel_metas = {}, {}
     for hemi in ('left', 'right'):
         for view in ('lateral', 'medial'):
             panels[hemi, view], panel_metas[f'{hemi}_{view}'] = _render_view(
-                surf_file, hemi, view, colors, len(labels), meta=meta, **plot_kwargs
+                surf, hemi, view, colors, len(labels), meta=meta, mesh_meta=mesh_meta, **plot_kwargs
             )
 
     # Lay the cropped views out edge to edge, sized so that they keep
@@ -561,14 +557,16 @@ def plot_lateral_medial(surf_file, output_path, labels, colors, meta=None, **plo
     cbar = fig.colorbar(mappable, cax=cax, ticks=range(1, len(labels) + 1))
     cbar.ax.set_yticklabels(labels)
 
-    fig.savefig(output_path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-
     meta = provenance.record_step(
         'plotting.plot_lateral_medial',
         inputs={panel: (None, panel_meta) for panel, panel_meta in panel_metas.items()},
         parameters={'labels': labels, 'colors': colors},
         output_path=output_path
     )
-    io_utils.save_sidecar(output_path, meta)
-    return meta
+    if output_path:
+        os.makedirs(Path(output_path).parent, exist_ok=True)
+        fig.savefig(output_path, dpi=200, bbox_inches='tight')
+        io_utils.save_sidecar(output_path, meta)
+    plt.close(fig)
+
+    return fig, meta

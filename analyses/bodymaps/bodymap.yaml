@@ -30,7 +30,9 @@ paths:
   # Saved as <name>_hemi-L.gii and <name>_hemi-R.gii plus a sidecar.
   mni_surface: "{anat}_space-MNI152NLin2009cAsym_desc-polymesh_{surf}.gii"
   projected: "wta/output/{sub}/{ses}/{task}_desc-surf_wta.gii"
-  fsaverage_labels: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-surf_wta_hemi-{hemi}.func.gii"
+  # Saved by io_utils.save_surface as <name>_{mesh,data}_hemi-{L,R}.gii
+  # plus a sidecar.
+  fsaverage_labels: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-surf_wta.gii"
   plot_mni: "wta/output/{sub}/{ses}/{task}_desc-projected_plot.png"
   plot_fsaverage: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_plot.png"
   views_mni: "wta/output/{sub}/{ses}/{task}_desc-projected_views_plot.png"

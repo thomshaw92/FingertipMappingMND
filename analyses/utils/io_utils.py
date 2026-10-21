@@ -120,6 +120,7 @@ def save_sidecar(path, meta):
     meta : dict
         Sidecar contents. ``Path`` objects are written as strings.
     """
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(_get_sidecar_json(path), 'w') as json_sidecar:
         json.dump(meta, json_sidecar, indent=2, cls=PathEncoder)
 
@@ -352,6 +353,8 @@ def save_image(img, img_path, meta=None):
     """
     if meta is None:
         meta = {}
+    # Create the output folder if needed.
+    Path(img_path).parent.mkdir(parents=True, exist_ok=True)
 
     save_sidecar(img_path, meta)
     nib.save(img, img_path)
@@ -378,6 +381,8 @@ def save_figure(fig, fig_path, meta=None, save_empty_sidecar=False, interactive=
     """
     if meta is None:
         meta = {}
+    # Create the output folder if needed.
+    Path(fig_path).parent.mkdir(parents=True, exist_ok=True)
 
     if interactive:
         fig.figure.write_html(fig_path)
@@ -406,6 +411,8 @@ def save_view(view, view_path, meta=None, save_empty_sidecar=False):
     """
     if meta is None:
         meta = {}
+    # Create the output folder if needed.
+    Path(view_path).parent.mkdir(parents=True, exist_ok=True)
 
     view.save_as_html(view_path)
 
@@ -475,6 +482,8 @@ def save_surface(surf_img, path, meta=None):
     """
     if meta is None:
         meta = {}
+    # Create the output folder if needed.
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     path = Path(path)
     
@@ -538,6 +547,8 @@ def save_gifti(data, path, meta=None):
     """
     if meta is None:
         meta = {}
+    # Create the output folder if needed.
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     darray = nib.gifti.GiftiDataArray(
         data.astype(np.float32),

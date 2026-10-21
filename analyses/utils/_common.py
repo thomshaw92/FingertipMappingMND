@@ -1,12 +1,23 @@
 """
 Private helpers and settings shared by ``volume``, ``surface`` and
 ``plotting``.
+
+Conventions of the public functions in those modules:
+  * Inputs can be in memory (images, surface images, meshes) or paths.
+  * The sidecar of the main input is passed as ``meta`` and that of any
+    other input ``x`` as ``x_meta``. Sidecars of paths are loaded from
+    disk when not given.
+  * Results are only saved when ``output_path`` is given.
+  * Functions return ``(result, meta)``.
 """
 from pathlib import Path
 
 import nibabel as nib
+import nilearn.datasets
 import nilearn.image
+import nilearn.surface
 import numpy as np
+from nilearn.surface import SurfaceImage
 
 import io_utils
 import provenance
@@ -87,6 +98,152 @@ def _check_input_img(img, meta=None, load_errors='raise'):
     return img, provenance.describe(img, meta)
 
 
+def _check_contrasts_img(img, meta=None, load_errors='raise'):
+    """
+    Load a 4D image whose volumes are labelled by ``volume_labels`` in
+    its sidecar, from memory or from disk.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image or path-like
+        The 4D image.
+    meta : dict, optional
+        Its sidecar; must contain ``volume_labels`` for in-memory
+        images. Loaded from disk for paths if not given.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    img_dict : dict
+        Mapping of volume label to the 3D volume, in volume order.
+    inp : tuple
+        ``(path, meta)`` describing the input for
+        ``provenance.record_step``.
+
+    Raises
+    ------
+    ValueError
+        If the image is not 4D or its sidecar has no ``volume_labels``.
+    """
+    img, inp = _check_input_img(img, meta=meta, load_errors=load_errors)
+    meta = inp[1] or {}
+    if img.ndim != 4:
+        raise ValueError(f'Expected a 4D image of contrasts, got a {img.ndim}D image.')
+    if 'volume_labels' not in meta:
+        raise ValueError('The sidecar of a 4D image of contrasts must contain `volume_labels`.')
+    img_dict = {label: img.slicer[..., idx] for idx, label in enumerate(meta['volume_labels'])}
+    return img_dict, inp
+
+
+def _check_input_surface(surf, meta=None):
+    """
+    Load a surface image from memory or from disk.
+
+    Parameters
+    ----------
+    surf : SurfaceImage or path-like
+        Surface image, or the base path it was saved with
+        (``io_utils.save_surface``).
+    meta : dict, optional
+        Its sidecar. Loaded from disk for paths if not given.
+
+    Returns
+    -------
+    surf : SurfaceImage
+        The surface image.
+    inp : tuple
+        ``(path, meta)`` describing the input for
+        ``provenance.record_step``.
+    """
+    if isinstance(surf, SurfaceImage):
+        return surf, (None, meta)
+    surface_image, disk_meta = io_utils.load_surface(surf)
+    return surface_image, provenance.describe(surf, meta if meta is not None else disk_meta)
+
+
+def _check_input_mesh(mesh, meta=None, standard_surface='fsaverage6', verbose=False):
+    """
+    Get a mesh given as an fsaverage mesh name, a path or in memory.
+
+    Parameters
+    ----------
+    mesh : str, path-like or nilearn.surface.PolyMesh
+        A mesh of the ``standard_surface`` fsaverage (e.g. ``'pial'``),
+        the base path of a mesh saved with ``PolyMesh.to_filename`` (as
+        ``<name>_hemi-L/R.gii``, a string ending in ``.gii`` or a
+        ``Path``), or a mesh in memory.
+    meta : dict, optional
+        Sidecar of the mesh. Loaded from disk for paths if not given.
+    standard_surface : str, optional
+        fsaverage resolution for mesh names. Default is
+        ``'fsaverage6'``.
+    verbose : bool, optional
+        If ``False``, suppress nilearn's printed output. Default is
+        ``False``.
+
+    Returns
+    -------
+    mesh : nilearn.surface.PolyMesh
+        The mesh.
+    name : str or None
+        The fsaverage mesh name, ``None`` for other meshes.
+    inp : tuple or None
+        ``(path, meta)`` describing the input for
+        ``provenance.record_step``; ``None`` for fsaverage meshes, which
+        are recorded as parameters.
+    """
+    if isinstance(mesh, str) and not mesh.endswith('.gii'):
+        with io_utils.optional_silent_print(verbose):
+            return nilearn.datasets.load_fsaverage(mesh=standard_surface)[mesh], mesh, None
+    if isinstance(mesh, (str, Path)):
+        polymesh, disk_meta = _load_polymesh(mesh)
+        return polymesh, None, provenance.describe(mesh, meta if meta is not None else disk_meta)
+    if not isinstance(mesh, nilearn.surface.PolyMesh):
+        mesh = nilearn.surface.PolyMesh(**mesh)
+    return mesh, None, (None, meta)
+
+
+def _load_polymesh(path):
+    """
+    Load a mesh saved with ``PolyMesh.to_filename`` (as
+    ``<name>_hemi-L.gii`` and ``<name>_hemi-R.gii``) and its sidecar.
+
+    Parameters
+    ----------
+    path : path-like
+        Base path the mesh was saved with.
+
+    Returns
+    -------
+    mesh : nilearn.surface.PolyMesh
+        The mesh.
+    meta : dict or None
+        Its sidecar, ``None`` if there is none.
+    """
+    path = Path(path)
+    parts = {hemi: path.with_name(f'{path.stem}_hemi-{h}{path.suffix}') for hemi, h in (('left', 'L'), ('right', 'R'))}
+    return nilearn.surface.PolyMesh(**parts), io_utils.load_sidecar(path, errors='ignore')
+
+
+def _labels(meta):
+    """
+    Label names recorded in a sidecar (e.g. by
+    ``volume.winner_take_all``).
+
+    Parameters
+    ----------
+    meta : dict or None
+        Sidecar.
+
+    Returns
+    -------
+    dict or None
+        Mapping of label value (str) to name, ``None`` if not recorded.
+    """
+    return (meta or {}).get('labels')
+
+
 def _prepare_mask(img, mask_img=None, load_errors='raise'):
     """
     Prepare a binary mask for a 3D or 4D image.
@@ -153,48 +310,3 @@ def _atlas_input(atlas):
     if atlas_str.endswith('.nii') or atlas_str.endswith('.nii.gz'):
         return provenance.describe(atlas_str)
     return None
-
-
-def _default_surface_output_path(input_path, folder, standard_surface, mesh, contrast, extension):
-    """
-    Build the default output path of a surface output.
-
-    The file is saved in ``folder`` next to the parent folder of the
-    input (e.g. ``func/`` -> ``surf/``) and named
-    ``<input name>_<surface>_<contrast><extension>``.
-
-    Parameters
-    ----------
-    input_path : path-like or dict
-        Input file. For a dict of per-hemi files, the left hemisphere
-        file is used. If dict it assumes that key 'left' exists and its
-        value is path-like.
-    folder : str
-        Name of the output folder, e.g. ``'surf'`` or ``'plots'``.
-    standard_surface : str
-        fsaverage resolution, used in the name if ``mesh`` is a string.
-    mesh : str or None
-        Name of an fsaverage mesh, or anything else (e.g. ``None``) for
-        a custom in-memory mesh.
-    contrast : str or None
-        Contrast, ``'unknown'`` if ``None``.
-    extension : str
-        Extension including the leading dot.
-
-    Returns
-    -------
-    Path
-        Output path.
-
-    Raises
-    ------
-    ValueError
-        If ``input_path`` is not a path, so no default can be derived.
-    """
-    if isinstance(input_path, dict):
-        input_path = input_path.get('left')
-    if not isinstance(input_path, (str, Path)):
-        raise ValueError('Cannot derive a default output path for in-memory data; pass `output_path`.')
-    surface = f'{standard_surface}_{mesh}' if isinstance(mesh, str) else 'custom_mesh'
-    name = Path(io_utils.get_output_path(input_path, suffix=f'{surface}_{contrast or "unknown"}', extension=extension)).name
-    return Path(input_path).parent.parent / folder / name
