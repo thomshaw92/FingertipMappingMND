@@ -10,6 +10,7 @@ Conventions of the public functions in those modules:
   * Results are only saved when ``output_path`` is given.
   * Functions return ``(result, meta)``.
 """
+import os
 from pathlib import Path
 
 import nibabel as nib
@@ -196,7 +197,7 @@ def _check_input_mesh(mesh, meta=None, standard_surface='fsaverage6', verbose=Fa
     if isinstance(mesh, str) and not mesh.endswith('.gii'):
         with io_utils.optional_silent_print(verbose):
             return nilearn.datasets.load_fsaverage(mesh=standard_surface)[mesh], mesh, None
-    if isinstance(mesh, (str, Path)):
+    if isinstance(mesh, (str, os.PathLike)):
         polymesh, disk_meta = _load_polymesh(mesh)
         return polymesh, None, provenance.describe(mesh, meta if meta is not None else disk_meta)
     if not isinstance(mesh, nilearn.surface.PolyMesh):
@@ -282,7 +283,7 @@ def _prepare_mask(img, mask_img=None, load_errors='raise'):
         if not shapes_match or not affines_match:
             mask_img = nilearn.image.resample_to_img(mask_img, img, interpolation='nearest')
 
-        mask_data = mask_img.get_fdata().astype(bool)  # (x, y, z)
+        mask_data = mask_img.get_fdata(caching='unchanged').astype(bool)  # (x, y, z)
     else:
         # Use everything if mask was not provided.
         mask_data = np.ones(img.shape[:3], dtype=bool)

@@ -56,7 +56,7 @@ def _surface_inputs(surf, meta=None):
     data, inputs = {}, {}
     for hemi, hemi_data in surf.items():
         hemi_meta = meta.get(hemi) if isinstance(meta, dict) and hemi in meta else meta
-        if isinstance(hemi_data, (Path, str)):
+        if isinstance(hemi_data, (str, os.PathLike)):
             inputs[hemi] = provenance.describe(hemi_data, hemi_meta)
             hemi_data = nilearn.surface.load_surf_data(str(hemi_data))
         else:
@@ -259,19 +259,25 @@ def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', 
     return display, meta
 
 
-def make_html(*args, legacy=False, **kwargs):
+def make_html(surf, meta=None, output_path=None, legacy=False, **kwargs):
     """
     Create an interactive HTML surface plot.
 
     Parameters
     ----------
-    *args, **kwargs
-        Passed to :func:`_surf_plot_html` or :func:`_view_surf_html`
-        depending on ``legacy``.
-
+    surf : SurfaceImage, path-like or dict
+        Surface image, as accepted by :func:`make_plot`.
+    meta : dict, optional
+        Sidecar of ``surf``. Required to keep the provenance of
+        in-memory surfaces; loaded from disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the HTML file. Not saved if not given.
     legacy : bool, optional
         If ``True``, use the legacy nilearn viewer (``view_surf``)
         instead of the new plotly-based viewer. Default is ``False``.
+    **kwargs
+        Passed to :func:`_surf_plot_html` or :func:`_view_surf_html`
+        depending on ``legacy``.
 
     Returns
     -------
@@ -280,10 +286,8 @@ def make_html(*args, legacy=False, **kwargs):
     meta : dict
         Sidecar of the HTML file.
     """
-    if legacy:
-        return _view_surf_html(*args, **kwargs)
-    else:
-        return _surf_plot_html(*args, **kwargs)
+    plot_html = _view_surf_html if legacy else _surf_plot_html
+    return plot_html(surf, meta=meta, output_path=output_path, **kwargs)
 
 
 def _surf_plot_html(surf, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, **kwargs):

@@ -1,0 +1,196 @@
+# Config of the body map pipeline, run with bodymap-runner.py.
+#
+# Steps run in the order listed. Each step:
+#   name:      unique name (used in logs and provenance).
+#   function:  any importable function, e.g. volume.threshold_images.
+#   inputs:    function argument -> name of a starting file or of an
+#              earlier step's output. The sidecar of an earlier output
+#              is passed along automatically (as `meta` or `<arg>_meta`).
+#   params:    any other arguments of the function. `!func module.name`
+#              passes a function.
+#   output:    optional name for the result, for later steps.
+#   save:      optional path; without it the result stays in memory.
+#
+# Paths are relative to base_dir (the derivatives folder) and can use
+# {sub} and {ses}.
+
+base_dir: /home/uqmtoth/data/BODYMAP-Q8904/data/mri/derivatives
+
+# Shared values, reused below with YAML anchors (&name ... *name).
+shared:
+  regions:
+    lh: &left [ctx-lh-precentral, ctx-lh-paracentral]
+    rh: &right [ctx-rh-precentral, ctx-rh-paracentral]
+    both: &both [ctx-lh-precentral, ctx-rh-precentral, ctx-lh-paracentral, ctx-rh-paracentral]
+  # One colour per WTA label: background (outside the ROI), the
+  # contrasts, and Rest (inside the ROI, no contrast significant).
+  color:
+    background: &background "#000000"
+    LAvsOthers: &la "#543005"
+    LFvsOthers: &lf "#8c510a"
+    LHvsOthers: &lh "#dfc27d"
+    LPvsOthers: &lp "#b2182b"
+    RAvsOthers: &ra "#003c30"
+    RFvsOthers: &rf "#01665e"
+    RHvsOthers: &rh "#80cdc1"
+    Rest: &rest "#f5f5f5"
+  # As a list in label order (background first), for the plots.
+  colors: &colors [*background, *la, *lf, *lh, *lp, *ra, *rf, *rh, *rest]
+  # Settings shared by all surface plots of the WTA labels. Label names
+  # (and vmin/vmax) come from the WTA sidecar.
+  label_plot: &label_plot
+    cmap: *colors
+    cmap_bg_first: true
+    colorbar: true
+    symmetric_cbar: false
+  # fsaverage resolution for resampling and the fsaverage plots.
+  fsaverage: &fsaverage fsaverage
+
+# Files the pipeline starts from.
+inputs:
+  z_score: "nilearn/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-z_score-unmasked_stats.nii.gz"
+  p_value: "nilearn/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-p_value-unmasked_stats.nii.gz"
+  brain_mask: "fmriprep/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz"
+  atlas: "atlases_mni/output/{sub}/{ses}/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-aparcDKTaseg_dseg.nii.gz"
+  t1: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_T1w.nii.gz"
+  xfm_mni_to_t1w: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_from-MNI152NLin2009cAsym_to-T1w_mode-image_xfm.h5"
+  pial_left: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-L_pial.surf.gii"
+  pial_right: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-R_pial.surf.gii"
+  white_left: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-L_white.surf.gii"
+  white_right: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-R_white.surf.gii"
+  sphere_left: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-L_space-fsaverage_desc-reg_sphere.surf.gii"
+  sphere_right: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-R_space-fsaverage_desc-reg_sphere.surf.gii"
+  midthickness_left: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-L_midthickness.surf.gii"
+  midthickness_right: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_hemi-R_midthickness.surf.gii"
+
+steps:
+  # --- Volume -------------------------------------------------------------
+
+  - name: correction
+    function: volume.correct_images
+    inputs: {img: p_value, mask_img: brain_mask}
+    params: {alpha: 0.05, method: fdr_bh}
+    output: p_corrected
+    save: "nilearn/output/{sub}/{ses}/func/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-p_value_corrected-unmasked_stats.nii.gz"
+
+  # Kept in memory; add `save:` to keep the thresholded maps.
+  - name: thresholding
+    function: volume.threshold_images
+    inputs: {img: z_score, thresh_img: p_corrected, mask_img: brain_mask}
+    params: {alpha: 0.05, thresh_val: 999}
+    output: thresholded
+
+  # Kept in memory; add `save:` to keep the per-contrast ROI maps.
+  - name: roi
+    function: volume.roi_per_contrast
+    inputs: {img: thresholded, atlas: atlas}
+    params:
+      # Each contrast uses the regions contralateral to the movement.
+      contrast_regions: {LAvsOthers: *right, LFvsOthers: *right, LHvsOthers: *right, LPvsOthers: *both,
+                         RAvsOthers: *left, RFvsOthers: *left, RHvsOthers: *left}
+      outside_val: -999.0
+    output: rois
+
+  # Records the label names (Outside ROI, the contrasts, Rest), which
+  # the segmentation and plots below use.
+  - name: wta
+    function: volume.winner_take_all
+    inputs: {img: rois, mask_img: brain_mask}
+    params: {outside_val: -999.0, below_thresh_val: 999, only_positive: true}
+    output: wta
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta.nii.gz"
+
+  - name: segmentation
+    function: volume.save_as_segmentation
+    inputs: {img: wta, template: t1}
+    params:
+      color_palette: {Outside ROI: *background, LAvsOthers: *la, LFvsOthers: *lf, LHvsOthers: *lh,
+                      LPvsOthers: *lp, RAvsOthers: *ra, RFvsOthers: *rf, RHvsOthers: *rh, Rest: *rest}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta_segmentation.nii.gz"
+
+  - name: resampled_t1
+    function: volume.resample_image
+    inputs: {img: t1, target_img: wta}
+    # Some fMRIPrep T1w images have no JSON sidecar; warn instead of
+    # stopping.
+    params: {interpolation: nearest, load_errors: warn}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-preproc_resampled_T1w.nii.gz"
+
+  # --- Surfaces -----------------------------------------------------------
+
+  # Saved as <name>_hemi-L.gii and <name>_hemi-R.gii plus a sidecar.
+  - name: mni_pial
+    function: surface.transform_surface_to_mni
+    inputs: {left_surf: pial_left, right_surf: pial_right, xfm_t1w_mni: xfm_mni_to_t1w}
+    output: pial
+    save: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_pial.gii"
+
+  - name: mni_white
+    function: surface.transform_surface_to_mni
+    inputs: {left_surf: white_left, right_surf: white_right, xfm_t1w_mni: xfm_mni_to_t1w}
+    output: white
+    save: "fmriprep/output/{sub}/{ses}/anat/{sub}_{ses}_space-MNI152NLin2009cAsym_desc-polymesh_white.gii"
+
+  # Saved by io_utils.save_surface as <name>_{mesh,data}_hemi-{L,R}.gii
+  # plus a sidecar.
+  - name: projection
+    function: surface.project_image
+    inputs: {img: wta, mesh: pial, inner_mesh: white, atlas: atlas}
+    params:
+      interpolation: nearest_most_frequent
+      kind: depth
+      n_samples: 20
+      standard_surface: MNI152NLin2009cAsym
+      # Hemispheres are projected separately, each from its own regions.
+      hemi_regions: {left: *left, right: *right}
+      # Fill gaps left by the projection, either with Workbench
+      # dilation + erosion ...
+      # dilate_dist: 2.0
+      # erode: true
+      # ... or with majority-vote smoothing (use one or the other):
+      smooth_iter: 1
+      smooth_fill_threshold: 0.5
+      smooth_n_ring: 2
+    output: projected
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-surf_wta.gii"
+
+  - name: fsaverage
+    function: surface.transform_surface_to_fsaverage
+    inputs: {surf: projected, left_sphere: sphere_left, right_sphere: sphere_right,
+             left_midthickness: midthickness_left, right_midthickness: midthickness_right}
+    params: {standard_surface: *fsaverage}
+    output: fsaverage_labels
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-surf_wta.gii"
+
+  # --- Plots --------------------------------------------------------------
+
+  - name: plot_mni
+    function: plotting.make_plot
+    inputs: {surf: projected, mesh: pial}
+    params: {<<: *label_plot, engine: matplotlib, hemi: both, view: dorsal, avg_method: median}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-projected_plot.png"
+
+  - name: plot_fsaverage
+    function: plotting.make_plot
+    inputs: {surf: fsaverage_labels}
+    params: {<<: *label_plot, engine: matplotlib, standard_surface: *fsaverage, mesh: pial,
+             hemi: both, view: dorsal, avg_method: median}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_plot.png"
+
+  - name: views_mni
+    function: plotting.plot_lateral_medial
+    inputs: {surf: projected, mesh: pial}
+    params: {colors: *colors, avg_method: median}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-projected_views_plot.png"
+
+  - name: views_fsaverage
+    function: plotting.plot_lateral_medial
+    inputs: {surf: fsaverage_labels}
+    params: {colors: *colors, standard_surface: *fsaverage, mesh: pial, avg_method: median}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_views_plot.png"
+
+  - name: html
+    function: plotting.make_html
+    inputs: {surf: fsaverage_labels}
+    params: {<<: *label_plot, standard_surface: *fsaverage, mesh: pial, hemi: both}
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-fsaverage_desc-projected_interactive.html"

@@ -7,6 +7,7 @@ See ``_common`` for the conventions all public functions follow.
 """
 import contextlib
 import logging
+import os
 import tempfile
 import warnings
 from pathlib import Path
@@ -59,7 +60,7 @@ def _correct_single_img(img, alpha=0.05, method='fdr_bh', mask_data=None):
     nib.Nifti1Image
         Image of corrected p-values with the same affine as ``img``.
     """
-    data = img.get_fdata().copy()
+    data = img.get_fdata(caching='unchanged').copy()
     if mask_data is not None:
         data[np.invert(mask_data)] = np.nan  # Set voxels outside the mask to NaN.
 
@@ -272,8 +273,8 @@ def _roi_single_img(img, regions, atlas='destrieux_2009', outside_val=np.nan):
         Image with voxels outside the ROI set to ``outside_val``.
     """
     mask = get_roi_mask(img=img, atlas=atlas, regions=regions, use_temp=False, verbose=0)
-    img_data = img.get_fdata()
-    mask_data = mask.get_fdata()
+    img_data = img.get_fdata(caching='unchanged')
+    mask_data = mask.get_fdata(caching='unchanged')
     masked_data = np.where(mask_data, img_data, outside_val)
     return nib.Nifti1Image(masked_data, affine=img.affine)
 
@@ -541,8 +542,8 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_d
     nib.Nifti1Image
         Thresholded image with the same affine as ``img``.
     """
-    img_data = img.get_fdata()
-    thresh_data = thresh_img.get_fdata()
+    img_data = img.get_fdata(caching='unchanged')
+    thresh_data = thresh_img.get_fdata(caching='unchanged')
     mask = thresh_data <= alpha
     masked_data = np.where(mask, img_data, thresh_val)
     if mask_data is not None:
@@ -702,7 +703,7 @@ def _apply_across_volumes(img, func, mask_data, **func_kwargs):
     nib.Nifti1Image
         3D float32 image of ``func`` results, ``0`` outside the mask.
     """
-    data = img.get_fdata()  # (x, y, z, t)
+    data = img.get_fdata(caching='unchanged')  # (x, y, z, t)
     data_2d = data[mask_data, :]  # (n_voxels, t)
 
     result_1d = np.apply_along_axis(func, axis=1, arr=data_2d, **func_kwargs)  # (n_voxels,)
@@ -957,6 +958,58 @@ def winner_take_all(img, mask_img=None, meta=None, output_path=None, below_thres
     return wta_img, meta
 
 
+def resample_image(img, target_img, meta=None, target_img_meta=None, output_path=None, interpolation='continuous', load_errors='raise'):
+    """
+    Resample an image onto the grid of another image.
+
+    Parameters
+    ----------
+    img : path-like or nib.Nifti1Image
+        Image to resample (e.g. a T1w image).
+    target_img : path-like or nib.Nifti1Image
+        Image defining the output grid (space and resolution).
+    meta : dict, optional
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
+    target_img_meta : dict, optional
+        Sidecar of ``target_img``, as for ``meta``.
+    output_path : path-like, optional
+        Path at which to save the resampled image. Not saved if not
+        given.
+    interpolation : {'continuous', 'linear', 'nearest'}, optional
+        Interpolation passed to ``nilearn.image.resample_to_img``; use
+        ``'nearest'`` for label images. Default is ``'continuous'``.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    resampled_img : nib.Nifti1Image
+        The resampled image.
+    meta : dict
+        Its sidecar. ``labels`` recorded for ``img`` are carried over.
+    """
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+    target_img, target_input = _check_input_img(target_img, meta=target_img_meta, load_errors=load_errors)
+
+    resampled_img = nilearn.image.resample_to_img(
+        img, target_img, interpolation=interpolation, force_resample=True, copy_header=True
+    )
+
+    meta = provenance.record_step(
+        'volume.resample_image',
+        inputs={'img': img_input, 'target_img': target_input},
+        parameters={'interpolation': interpolation},
+        output_path=output_path,
+        fields={'labels': _labels(img_input[1])}
+    )
+
+    if output_path:
+        io_utils.save_image(resampled_img, output_path, meta=meta)
+
+    return resampled_img, meta
+
+
 def save_as_segmentation(img, meta=None, template=None, labels=None, output_path=None, load_errors='raise', color_palette=None):
     """
     Convert an image into an integer segmentation.
@@ -1003,7 +1056,7 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         labels = {int(k): v for k, v in _labels(img_input[1]).items()}
 
     out_img = nib.Nifti1Image(
-        img.get_fdata().astype(np.int16),
+        img.get_fdata(caching='unchanged').astype(np.int16),
         affine=img.affine,
         header=img.header
     )
@@ -1016,6 +1069,9 @@ def save_as_segmentation(img, meta=None, template=None, labels=None, output_path
         template_name = 'nilearn.datasets.load_mni152_template(resolution=1)'
     elif template is not False:
         template_input = provenance.describe(template)
+        if isinstance(template, os.PathLike):
+            # nilearn only takes str and pathlib paths.
+            template = os.fspath(template)
 
     if template is not False:
         out_img = nilearn.image.resample_to_img(

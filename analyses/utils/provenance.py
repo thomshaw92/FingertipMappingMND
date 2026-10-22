@@ -125,12 +125,34 @@ def pipeline_step(name):
     name : str
         Name of the pipeline step.
     """
-    global _PIPELINE_STEP
-    previous, _PIPELINE_STEP = _PIPELINE_STEP, name
+    previous = set_pipeline_step(name)
     try:
         yield
     finally:
-        _PIPELINE_STEP = previous
+        set_pipeline_step(previous)
+
+
+def set_pipeline_step(name):
+    """
+    Set the pipeline step name saved in the steps recorded from now on
+    (see :func:`pipeline_step`); ``None`` stops labelling.
+
+    For workflow engines that run code before and after each task
+    (e.g. Pydra's task hooks) rather than around it.
+
+    Parameters
+    ----------
+    name : str or None
+        Name of the pipeline step.
+
+    Returns
+    -------
+    str or None
+        The previous name.
+    """
+    global _PIPELINE_STEP
+    previous, _PIPELINE_STEP = _PIPELINE_STEP, name
+    return previous
 
 
 def _jsonable(obj):
@@ -176,7 +198,7 @@ def describe(obj, meta=None):
     tuple
         ``(path, meta)`` where ``path`` is an absolute path or ``None``.
     """
-    if isinstance(obj, (str, Path)):
+    if isinstance(obj, (str, os.PathLike)):
         path = obj
     else:
         get_filename = getattr(obj, 'get_filename', None)

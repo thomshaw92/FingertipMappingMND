@@ -455,11 +455,11 @@ def project_image(img, contrast=None, meta=None, output_path=None, mesh='pial', 
         # (e.g. across the midline between the paracentral lobules).
         if atlas is None:
             raise ValueError('`atlas` is required with `hemi_regions`.')
-        vol_data = vol_img.get_fdata()
+        vol_data = vol_img.get_fdata(caching='unchanged')
         textures = {}
         for hemi in ('left', 'right'):
             hemi_mask = get_roi_mask(img=vol_img, regions=hemi_regions[hemi], atlas=atlas, use_temp=False, verbose=0)
-            hemi_img = nib.Nifti1Image(np.where(hemi_mask.get_fdata() > 0, vol_data, 0), vol_img.affine, vol_img.header)
+            hemi_img = nib.Nifti1Image(np.where(hemi_mask.get_fdata(caching='unchanged') > 0, vol_data, 0), vol_img.affine, vol_img.header)
             textures[hemi] = nilearn.surface.vol_to_surf(
                 hemi_img,
                 mesh.parts[hemi],
