@@ -16,6 +16,7 @@ import nibabel as nib
 import nilearn.datasets
 import nilearn.image
 import numpy as np
+from scipy import ndimage
 from statsmodels.stats.multitest import multipletests
 
 import io_utils
@@ -956,6 +957,102 @@ def winner_take_all(img, mask_img=None, meta=None, output_path=None, below_thres
         io_utils.save_image(wta_img, output_path, meta=meta)
 
     return wta_img, meta
+
+
+def largest_components(img, n_components, meta=None, output_path=None, connectivity=1, fill_label=None, load_errors='raise'):
+    """
+    Keep only the largest connected components of selected labels in a
+    label image (e.g. from :func:`winner_take_all`).
+
+    For each label in ``n_components``, the voxels with that label are
+    split into connected components (``scipy.ndimage.label``) and only
+    the given number of largest components is kept; the label's other
+    voxels are set to ``fill_label``. Labels not in ``n_components`` are
+    left unchanged. Components of equal size are ranked in the order
+    ``scipy.ndimage.label`` finds them.
+
+    Parameters
+    ----------
+    img : path-like or nib.Nifti1Image
+        3D label image whose sidecar records the label names as
+        ``labels`` (as :func:`winner_take_all` does).
+    n_components : dict
+        Mapping of label name to the number of largest components to
+        keep, e.g. ``{'LPvsOthers': 2, 'LHvsOthers': 1}``. ``0`` removes
+        the label entirely.
+    meta : dict, optional
+        Sidecar of ``img``. Required for in-memory images; loaded from
+        disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the result. Not saved if not given.
+    connectivity : {1, 2, 3}, optional
+        Which neighbouring voxels count as connected: ``1`` voxels
+        sharing a face (6-connectivity), ``2`` also an edge (18), ``3``
+        also a corner (26). Default is ``1``.
+    fill_label : str, optional
+        Name of the label given to removed voxels, e.g. ``'Rest'``.
+        Default is ``0`` (outside the ROI / background).
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    out_img : nib.Nifti1Image
+        Label image with the smaller components removed.
+    meta : dict
+        Its sidecar. The labels are carried over, and ``components``
+        records, per processed label, the number of components found,
+        the sizes (in voxels) of those kept, and the number of voxels
+        removed.
+
+    Raises
+    ------
+    ValueError
+        If the sidecar records no label names, or a label in
+        ``n_components`` or ``fill_label`` is not one of them.
+    """
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+    labels = _labels(img_input[1])
+    if not labels:
+        raise ValueError('The sidecar of `img` must record the label names as `labels`.')
+    value_of = {name: int(value) for value, name in labels.items()}
+    unknown = [name for name in [*n_components, *([fill_label] if fill_label else [])] if name not in value_of]
+    if unknown:
+        raise ValueError(f'Unknown label(s) {unknown}; the image has {list(value_of)}.')
+    fill_value = value_of[fill_label] if fill_label else 0
+
+    data = img.get_fdata(caching='unchanged')
+    out = data.copy()
+    structure = ndimage.generate_binary_structure(3, connectivity)
+    components = {}
+    for name, n_keep in n_components.items():
+        mask = data == value_of[name]
+        labelled, n_found = ndimage.label(mask, structure=structure)
+        sizes = ndimage.sum_labels(mask, labelled, index=np.arange(1, n_found + 1))
+        # Largest first; equal sizes keep the order they were found in.
+        keep = np.argsort(-sizes, kind='stable')[:n_keep] + 1
+        remove = mask & ~np.isin(labelled, keep)
+        out[remove] = fill_value
+        components[name] = {
+            'n_found': int(n_found),
+            'kept_sizes': [int(sizes[k - 1]) for k in keep],
+            'removed_voxels': int(remove.sum()),
+        }
+
+    out_img = nib.Nifti1Image(out.astype(data.dtype), img.affine, img.header)
+
+    meta = provenance.record_step(
+        'volume.largest_components',
+        inputs={'img': img_input},
+        parameters={'n_components': n_components, 'connectivity': connectivity, 'fill_label': fill_label},
+        output_path=output_path,
+        fields={'labels': labels, 'components': components}
+    )
+
+    if output_path:
+        io_utils.save_image(out_img, output_path, meta=meta)
+
+    return out_img, meta
 
 
 def resample_image(img, target_img, meta=None, target_img_meta=None, output_path=None, interpolation='continuous', load_errors='raise'):

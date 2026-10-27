@@ -100,9 +100,24 @@ steps:
     output: wta
     save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta.nii.gz"
 
+  # Keeps only the largest connected component(s) of each contrast;
+  # the rest of its voxels become Rest. The sidecar records the number
+  # of components found and the sizes kept.
+  - name: components
+    function: volume.largest_components
+    inputs: {img: wta}
+    params:
+      n_components: {LAvsOthers: 1, LFvsOthers: 1, LHvsOthers: 1, LPvsOthers: 2,
+                     RAvsOthers: 1, RFvsOthers: 1, RHvsOthers: 1}
+      # 1: voxels sharing a face (6-connectivity); 2: also an edge; 3: also a corner.
+      connectivity: 1
+      fill_label: Rest
+    output: wta_components
+    save: "wta/output/{sub}/{ses}/{sub}_{ses}_task-bodyloc_run-1_space-MNI152NLin2009cAsym_desc-wta_components.nii.gz"
+
   - name: segmentation
     function: volume.save_as_segmentation
-    inputs: {img: wta, template: t1}
+    inputs: {img: wta_components, template: t1}
     params:
       color_palette: {Outside ROI: *background, LAvsOthers: *la, LFvsOthers: *lf, LHvsOthers: *lh,
                       LPvsOthers: *lp, RAvsOthers: *ra, RFvsOthers: *rf, RHvsOthers: *rh, Rest: *rest}
@@ -135,7 +150,7 @@ steps:
   # plus a sidecar.
   - name: projection
     function: surface.project_image
-    inputs: {img: wta, mesh: pial, inner_mesh: white, atlas: atlas}
+    inputs: {img: wta_components, mesh: pial, inner_mesh: white, atlas: atlas}
     params:
       interpolation: nearest_most_frequent
       kind: depth
