@@ -252,6 +252,65 @@ def correct_images_folder(path, suffix='corrected', filename_contains='p_value',
             logger.info(f'Corrected {file.relative_to(path)} -> {Path(output_path).relative_to(path)}')
 
 
+def invert_image(img, kind, meta=None, output_path=None, load_errors='raise'):
+    """
+    Invert z-scores or one-sided p-values, to test the opposite
+    direction of a contrast (e.g. deactivation instead of activation).
+
+    nilearn's p-values are one-sided (``p = sf(z)``), so the z-scores
+    and the p-values of a contrast both need inverting for the negated
+    contrast: z becomes ``-z`` and p becomes ``1 - p``.
+
+    Parameters
+    ----------
+    img : path-like or nib.Nifti1Image
+        3D or 4D image of z-scores or p-values.
+    kind : {'z', 'p'}
+        ``'z'`` negates the values; ``'p'`` returns ``1 - p``.
+    meta : dict, optional
+        Sidecar of ``img``. Required to keep the provenance of in-memory
+        images; loaded from disk for paths if not given.
+    output_path : path-like, optional
+        Path at which to save the inverted image. Not saved if not
+        given.
+    load_errors : {'raise', 'warn'}, optional
+        How to handle loading errors. Default is ``'raise'``.
+
+    Returns
+    -------
+    inverted_img : nib.Nifti1Image
+        The inverted image.
+    meta : dict
+        Its sidecar. ``volume_labels`` recorded for ``img`` are carried
+        over.
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is not ``'z'`` or ``'p'``.
+    """
+    if kind not in ('z', 'p'):
+        raise ValueError(f"`kind` must be 'z' or 'p', got {kind!r}.")
+    img, img_input = _check_input_img(img, meta=meta, load_errors=load_errors)
+
+    data = img.get_fdata(caching='unchanged')
+    inverted_data = -data if kind == 'z' else 1.0 - data
+    inverted_img = nib.Nifti1Image(inverted_data, affine=img.affine)
+
+    meta = provenance.record_step(
+        'volume.invert_image',
+        inputs={'img': img_input},
+        parameters={'kind': kind},
+        output_path=output_path,
+        fields={'volume_labels': (img_input[1] or {}).get('volume_labels')}
+    )
+
+    if output_path:
+        io_utils.save_image(inverted_img, output_path, meta=meta)
+
+    return inverted_img, meta
+
+
 def _roi_single_img(img, regions, atlas='destrieux_2009', outside_val=np.nan):
     """
     Mask a 3D image to retain only the specified atlas regions.
