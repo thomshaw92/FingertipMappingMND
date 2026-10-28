@@ -77,7 +77,56 @@ def _label_names(inputs):
     return [labels[key] for key in sorted(labels, key=int) if int(key) > 0]
 
 
-def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+def _check_bg_map(mesh, left_bg_map=None, right_bg_map=None):
+    """
+    Load a per-hemi background map (e.g. sulcal depth) for ``mesh``.
+
+    Parameters
+    ----------
+    mesh : nilearn.surface.PolyMesh
+        Mesh the map is shown on.
+    left_bg_map, right_bg_map : path-like or np.ndarray, optional
+        Per-vertex values of each hemisphere, as GIFTI paths (e.g.
+        fMRIPrep's ``*_hemi-L_sulc.shape.gii``) or arrays. Give both or
+        neither.
+
+    Returns
+    -------
+    bg_map : SurfaceImage or None
+        The background map, ``None`` if neither is given.
+    inputs : dict
+        Inputs for ``provenance.record_step``.
+
+    Raises
+    ------
+    ValueError
+        If only one hemisphere is given, or a map does not have one
+        value per vertex of its hemisphere of ``mesh``.
+    """
+    if left_bg_map is None and right_bg_map is None:
+        return None, {}
+    if left_bg_map is None or right_bg_map is None:
+        raise ValueError('Give both `left_bg_map` and `right_bg_map`, or neither.')
+
+    data, inputs = {}, {}
+    for hemi, bg_map in (('left', left_bg_map), ('right', right_bg_map)):
+        if isinstance(bg_map, (str, os.PathLike)):
+            inputs[f'{hemi}_bg_map'] = provenance.describe(bg_map)
+            bg_map = nilearn.surface.load_surf_data(os.fspath(bg_map))
+        else:
+            inputs[f'{hemi}_bg_map'] = (None, None)
+        bg_map = np.asarray(bg_map).ravel()
+        n_vertices = mesh.parts[hemi].n_vertices
+        if bg_map.size != n_vertices:
+            raise ValueError(
+                f'`{hemi}_bg_map` has {bg_map.size} values but the {hemi} mesh has {n_vertices} vertices; '
+                'the map must come from the same mesh (e.g. native sulc with a native/MNI mesh).'
+            )
+        data[hemi] = bg_map
+    return SurfaceImage(mesh=mesh, data=data), inputs
+
+
+def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, left_bg_map=None, right_bg_map=None, **kwargs):
     """
     Plot a surface image without saving it.
 
@@ -95,17 +144,17 @@ def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated
         Plotting parameters for ``provenance.record_step``.
     """
     mesh, mesh_name, mesh_input = _check_input_mesh(mesh, mesh_meta, standard_surface, verbose)
-    if mesh_name is not None:
+    bg_map, bg_inputs = _check_bg_map(mesh, left_bg_map=left_bg_map, right_bg_map=right_bg_map)
+    if bg_map is None and mesh_name is not None:
         # fsaverage meshes come with a sulcal map to show underneath.
         with io_utils.optional_silent_print(verbose):
-            fsaverage_data = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh_name)
-    else:
-        fsaverage_data = None
+            bg_map = nilearn.datasets.load_fsaverage_data(mesh=standard_surface, data_type="sulcal", mesh_type=mesh_name)
 
     surface_image, inputs = _surface_inputs(surf, meta=meta)
     if not isinstance(surface_image, SurfaceImage):
         surface_image = SurfaceImage(mesh=mesh, data=surface_image)
     inputs['mesh'] = mesh_input
+    inputs.update(bg_inputs)
 
     # Label images: use the recorded label names for the colorbar.
     if colorbar_labels is None:
@@ -144,7 +193,7 @@ def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated
     display = nilearn.plotting.plot_surf_stat_map(
         surf_mesh=mesh,
         stat_map=surface_image,
-        bg_map=fsaverage_data,
+        bg_map=bg_map,
         **kwargs
     )
 
@@ -186,7 +235,7 @@ def _plot_surface(surf, meta=None, standard_surface='fsaverage6', mesh='inflated
     return display, inputs, parameters
 
 
-def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, **kwargs):
+def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', mesh='inflated', verbose=False, colorbar_labels=None, cmap=None, cmap_bg_first=False, mesh_meta=None, left_bg_map=None, right_bg_map=None, **kwargs):
     """
     Create a static surface stat-map plot.
 
@@ -230,6 +279,13 @@ def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', 
     mesh_meta : dict, optional
         Sidecar of ``mesh`` when it is a mesh in memory; loaded from
         disk for paths if not given.
+    left_bg_map, right_bg_map : path-like or np.ndarray, optional
+        Background map (e.g. sulcal depth) of each hemisphere with one
+        value per vertex of ``mesh``, as GIFTI paths (e.g. fMRIPrep's
+        ``*_hemi-L_sulc.shape.gii``, which also fits the MNI meshes from
+        ``surface.transform_surface_to_mni``) or arrays. Give both or
+        neither. Defaults to the fsaverage sulcal map for fsaverage
+        meshes and no background otherwise.
     **kwargs
         Additional keyword arguments passed to
         ``nilearn.plotting.plot_surf_stat_map``. ``vmin``/``vmax``
@@ -244,7 +300,8 @@ def make_plot(surf, meta=None, output_path=None, standard_surface='fsaverage6', 
     """
     display, inputs, parameters = _plot_surface(
         surf, meta=meta, standard_surface=standard_surface, mesh=mesh, verbose=verbose,
-        colorbar_labels=colorbar_labels, cmap=cmap, cmap_bg_first=cmap_bg_first, mesh_meta=mesh_meta, **kwargs
+        colorbar_labels=colorbar_labels, cmap=cmap, cmap_bg_first=cmap_bg_first, mesh_meta=mesh_meta,
+        left_bg_map=left_bg_map, right_bg_map=right_bg_map, **kwargs
     )
 
     meta = provenance.record_step('plotting.make_plot', inputs=inputs, parameters=parameters, output_path=output_path)
@@ -509,7 +566,8 @@ def plot_lateral_medial(surf, colors, output_path=None, labels=None, meta=None, 
         memory.
     **plot_kwargs
         Passed to :func:`make_plot` (e.g. ``mesh``,
-        ``standard_surface``, ``avg_method``).
+        ``standard_surface``, ``avg_method``, ``left_bg_map`` and
+        ``right_bg_map``).
 
     Returns
     -------
