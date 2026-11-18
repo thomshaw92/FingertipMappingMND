@@ -599,8 +599,10 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_d
 
     Returns
     -------
-    nib.Nifti1Image
+    thresholded_img : nib.Nifti1Image
         Thresholded image with the same affine as ``img``.
+    survived : np.ndarray
+        Boolean (x, y, z) array of the voxels at or below ``alpha``.
     """
     img_data = img.get_fdata(caching='unchanged')
     thresh_data = thresh_img.get_fdata(caching='unchanged')
@@ -608,7 +610,9 @@ def _threshold_single_img(img, thresh_img, alpha=0.05, thresh_val=np.nan, mask_d
     masked_data = np.where(mask, img_data, thresh_val)
     if mask_data is not None:
         masked_data[np.invert(mask_data)] = 0.0  # Set voxels outside the mask to a background value.
-    return nib.Nifti1Image(masked_data, affine=img.affine)
+    thresholded_img = nib.Nifti1Image(masked_data, affine=img.affine)
+    
+    return thresholded_img, mask
 
 
 def _threshold_top_percent_img(img, top_percent, thresh_val=np.nan, mask_data=None):
@@ -638,6 +642,8 @@ def _threshold_top_percent_img(img, top_percent, thresh_val=np.nan, mask_data=No
     -------
     thresholded_img : nib.Nifti1Image
         Thresholded image with the same affine as ``img``.
+    survived : np.ndarray
+        Boolean (x, y, z) array of the voxels at or above the cutoff.
     cutoff : float
         The value at the cutoff.
 
@@ -661,7 +667,43 @@ def _threshold_top_percent_img(img, top_percent, thresh_val=np.nan, mask_data=No
     masked_data = np.where(keep, img_data, thresh_val)
     if mask_data is not None:
         masked_data[np.invert(mask_data)] = 0.0  # Set voxels outside the mask to a background value.
-    return nib.Nifti1Image(masked_data, affine=img.affine), cutoff
+    thresholded_img = nib.Nifti1Image(masked_data, affine=img.affine)
+    
+    return thresholded_img, keep, cutoff
+
+
+def _require_contrasts(img, survived, thresh_val=np.nan, mask_data=None):
+    """
+    Remove voxels of an already thresholded image that did not survive
+    thresholding in other contrasts.
+
+    Parameters
+    ----------
+    img : nib.Nifti1Image
+        Thresholded image.
+    survived : list of np.ndarray
+        Boolean (x, y, z) arrays of the voxels surviving in each of the
+        other contrasts. A voxel has to survive in all of them.
+    thresh_val : float, optional
+        Value given to the voxels removed. Default is NaN.
+    mask_data : np.ndarray, optional
+        Boolean (x, y, z) array; voxels where it is ``False`` are left
+        unchanged. Default is to use all voxels.
+
+    Returns
+    -------
+    required_img : nib.Nifti1Image
+        Image with the voxels removed.
+    removed : np.ndarray
+        Boolean (x, y, z) array of the voxels removed.
+    """
+    removed = np.invert(np.logical_and.reduce(survived))
+    if mask_data is not None:
+        removed &= mask_data
+    required_data = np.where(removed, thresh_val, img.get_fdata(caching='unchanged'))
+    required_img = nib.Nifti1Image(required_data, affine=img.affine)
+    
+    return required_img, removed
 
 
 def _check_threshold_method(thresh_img, top_percent):
@@ -733,12 +775,12 @@ def threshold_single_image(img, thresh_img=None, meta=None, thresh_img_meta=None
     fields = {}
     if top_percent is not None:
         p_input = None
-        masked_img, cutoff = _threshold_top_percent_img(est_img, top_percent, thresh_val=thresh_val, mask_data=mask_data)
+        masked_img, _, cutoff = _threshold_top_percent_img(est_img, top_percent, thresh_val=thresh_val, mask_data=mask_data)
         fields['top_percent_cutoff'] = cutoff
     else:
         p_img, p_input = _check_input_img(thresh_img, meta=thresh_img_meta, load_errors=load_errors)
         p_img = _select_contrast_img(p_img, contrast_idx=contrast_idx)
-        masked_img = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
+        masked_img, _ = _threshold_single_img(est_img, p_img, alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
 
     meta = provenance.record_step(
         'volume.threshold_single_image',
@@ -759,7 +801,7 @@ def threshold_single_image(img, thresh_img=None, meta=None, thresh_img_meta=None
     return masked_img, meta
 
 
-def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alpha=0.05, output_path=None, load_errors='raise', thresh_val=np.nan, mask_img=None, top_percent=None):
+def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alpha=0.05, output_path=None, load_errors='raise', thresh_val=np.nan, mask_img=None, top_percent=None, required_contrasts=None):
     """
     Threshold a 4D image contrast by contrast, either with a p-value
     image or by keeping each contrast's largest values.
@@ -773,6 +815,11 @@ def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alph
     * ``top_percent``: for each contrast separately, only the largest
       ``top_percent`` percent of its values are kept (see
       :func:`_threshold_top_percent_img`).
+
+    With ``required_contrasts``, a voxel of a contrast also has to
+    survive in the other contrasts listed for it, e.g. in ``LA`` for
+    ``LAvsOthers``. Every contrast is first thresholded on its own, so
+    with ``top_percent`` fewer voxels than that percentage can remain.
 
     Parameters
     ----------
@@ -806,6 +853,13 @@ def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alph
         Percentage of voxels (inside the mask) with the largest values
         to keep in each contrast, in (0, 100], e.g. ``5`` for the top
         5%.
+    required_contrasts : dict, optional
+        Mapping of contrast label to the label(s) of other contrasts of
+        ``img`` in which its voxels also have to survive, e.g.
+        ``{'LAvsOthers': 'LA'}`` or ``{'LAvsOthers': ['LA', 'LF']}``.
+        Other voxels are set to ``thresh_val``. Each required contrast
+        is checked as thresholded on its own, and is not itself changed
+        unless it is a key of the mapping. Default is no requirement.
 
     Returns
     -------
@@ -815,26 +869,39 @@ def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alph
     meta : dict
         Sidecar of the thresholded image. With ``top_percent``, the
         value at each contrast's cutoff is recorded as
-        ``top_percent_cutoffs``.
+        ``top_percent_cutoffs``. With ``required_contrasts``, the number
+        of voxels each requirement removed is recorded as
+        ``required_removed_voxels``.
 
     Raises
     ------
     ValueError
         If both or neither of ``thresh_img`` and ``top_percent`` are
-        given, ``top_percent`` is not in (0, 100], or both images are
-        4D but their contrast labels do not match.
+        given, ``top_percent`` is not in (0, 100], both images are 4D
+        but their contrast labels do not match, or
+        ``required_contrasts`` has labels that are not in ``img``.
     """
     _check_threshold_method(thresh_img, top_percent)
     est_dict, est_input = _check_contrasts_img(img, meta=meta, load_errors=load_errors)
 
+    # One label or a list of them.
+    required = {
+        contrast: [others] if isinstance(others, str) else list(others)
+        for contrast, others in (required_contrasts or {}).items()
+    }
+    unknown = [label for contrast, others in required.items() for label in [contrast, *others] if label not in est_dict]
+    if unknown:
+        raise ValueError(f'Unknown contrast(s) {unknown} in `required_contrasts`; the image has {list(est_dict)}.')
+
     new_imgs = {}
+    survived = {}
     fields = {}
     if top_percent is not None:
         p_input = None
         cutoffs = {}
         for contrast, est_contrast_img in est_dict.items():
             mask_data, mask_input = _prepare_mask(est_contrast_img, mask_img=mask_img, load_errors=load_errors)
-            new_imgs[contrast], cutoffs[contrast] = _threshold_top_percent_img(
+            new_imgs[contrast], survived[contrast], cutoffs[contrast] = _threshold_top_percent_img(
                 est_contrast_img, top_percent, thresh_val=thresh_val, mask_data=mask_data)
         fields['top_percent_cutoffs'] = cutoffs
     else:
@@ -849,7 +916,18 @@ def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alph
 
         for contrast, est_contrast_img in est_dict.items():
             mask_data, mask_input = _prepare_mask(est_contrast_img, mask_img=mask_img, load_errors=load_errors)
-            new_imgs[contrast] = _threshold_single_img(est_contrast_img, p_dict[contrast], alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
+            new_imgs[contrast], survived[contrast] = _threshold_single_img(
+                est_contrast_img, p_dict[contrast], alpha=alpha, thresh_val=thresh_val, mask_data=mask_data)
+
+    # Checked against each contrast thresholded on its own, so the order
+    # of the requirements does not matter.
+    if required:
+        removed_voxels = {}
+        for contrast, others in required.items():
+            new_imgs[contrast], removed = _require_contrasts(
+                new_imgs[contrast], [survived[other] for other in others], thresh_val=thresh_val, mask_data=mask_data)
+            removed_voxels[contrast] = int(np.count_nonzero(removed & survived[contrast]))
+        fields['required_removed_voxels'] = removed_voxels
 
     # Concatenate along a new axis to create a 4D image.
     thresholded_img = nib.concat_images(list(new_imgs.values()))
@@ -860,7 +938,8 @@ def threshold_images(img, thresh_img=None, meta=None, thresh_img_meta=None, alph
         parameters={
             'alpha': alpha if top_percent is None else None,
             'top_percent': top_percent,
-            'thresh_val': thresh_val
+            'thresh_val': thresh_val,
+            'required_contrasts': required or None
         },
         output_path=output_path,
         fields={'volume_labels': list(new_imgs.keys()), **fields}
