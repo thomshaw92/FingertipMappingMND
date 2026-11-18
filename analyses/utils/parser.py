@@ -75,8 +75,13 @@ class AggregateData:
     
     def __getattr__(self, name):
         """Dynamically wrap pandas DataFrame methods to log operations."""
-        attr = getattr(self._data, name, None)
+        # Avoid infinite recursion when '_data' isn't set yet (e.g. during
+        # unpickling), and don't delegate dunders: protocols like copy/pickle
+        # must see this object's behaviour, not the DataFrame's.
+        if '_data' not in self.__dict__ or (name.startswith('__') and name.endswith('__')):
+            raise AttributeError(f"{type(self).__name__} has no attribute {name}")
 
+        attr = getattr(self._data, name, None)
         if attr is None:
             raise AttributeError(f"{type(self).__name__} has no attribute {name}")
 
@@ -503,6 +508,7 @@ class AggregateData:
 
         return results
 
+    @staticmethod
     def _bootstrap_ci(x, y, level=0.95, n_boot=2000, paired=False, method='bca'):
         """Compute bootstrap confidence interval for the difference in medians between two samples."""
         # Vectorised computations (indicated by using the axis argument
