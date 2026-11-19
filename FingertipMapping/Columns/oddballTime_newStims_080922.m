@@ -132,12 +132,9 @@ clear ans
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-% Set home directory
-if scannerPC == 0
-    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\';%'/Users/uqhdemp1/Documents/2022/Columns II/Scanner task'; % office mac
-else
-    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\'; %'ADD'; % ADD FOR STIMS PC
-end
+% Set home directory: the folder this script is in (current folder if run as a selection)
+homedir = fileparts(mfilename('fullpath'));
+if isempty(homedir), homedir = pwd; end
 
 % Set data directory
 if scannerPC == 0

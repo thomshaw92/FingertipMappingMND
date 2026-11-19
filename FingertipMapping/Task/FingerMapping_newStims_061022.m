@@ -400,12 +400,9 @@ clear ans
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-% Set home directory
-if scannerPC == 0
-    homedir = '/Users/uqhdemp1/Documents/2022/Analysis & fMRI General/Fingertip maps/Script_new_stims'; % office mac
-else
-    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Fingertip_mapping\Script'; % ADD FOR STIMS PC
-end
+% Set home directory: the folder this script is in (current folder if run as a selection)
+homedir = fileparts(mfilename('fullpath'));
+if isempty(homedir), homedir = pwd; end
 
 % Set data directory
 if scannerPC == 0

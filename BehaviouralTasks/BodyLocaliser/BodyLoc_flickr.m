@@ -71,8 +71,9 @@ clear ans
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-% Set home directory
-homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Body_Localizer_MRI';
+% Set home directory: the folder this script is in (current folder if run as a selection)
+homedir = fileparts(mfilename('fullpath'));
+if isempty(homedir), homedir = pwd; end
 % Set data directory
 datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
 clear homedir
