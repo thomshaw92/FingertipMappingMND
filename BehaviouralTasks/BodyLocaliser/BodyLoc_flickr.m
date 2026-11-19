@@ -1,5 +1,3 @@
-
-
 % % TO DO
 % Change things for PC - homedir (116)
 % Add input varibles for participant details - now puts in auto
@@ -13,6 +11,9 @@
 % % TO DO LATER
 % EDIT TR IF NEEDED
 
+%_______________________________________
+% edit for hinky PTB 
+Screen('Preference', 'SkipSyncTests', 1);
 
 %% Clean up
 
@@ -28,19 +29,16 @@ format long g
 %% Scanning details
 
 % Number of TRs before stimulation starts
-TRsdead = 8; % edited 12/4
-% TRsdead = 5; % How many do we want??
+TRsdead = 8; %  How many do we want?? edited from 5
 
 % Movement TRs
-TRsmove = 11; % edited 14/4
-% TRsmove = 7; % edited from 6 to 7
+TRsmove = 11; % edited from 7
 
 % Rest TRs
 TRsrest = TRsmove;
 
 % TR
-TR = 0.900; % edited 12/04/23
-% TR = 1.466; % edited 9/1/23
+TR = .90; %1.00; %1.466; % edited 9/1/23
 
 
 %% Get subj & filename details
@@ -67,19 +65,17 @@ end
 filename = ['BodyLoc_', subcode, '_', p_init, '_run', num2str(run_num), '_', datetag];
 
 % Pop filename on screen so experimenter can check participant dets and cancel out if details are wrong
-input(sprintf('Check participant dets: %s - exit if incorrect', filename));
+%%input(sprintf('Check participant dets: %s - exit if incorrect', filename));
 clear ans
 
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-% Set home directory
-homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Body_Localizer_MRI';%uqhdemp1/Documents/2022/MND/Body Loc'; % office mac
-% homedir = ADD FOR STIMS PC;
-
+% Set home directory: the folder this script is in (current folder if run as a selection)
+homedir = fileparts(mfilename('fullpath'));
+if isempty(homedir), homedir = pwd; end
 % Set data directory
 datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
-% PC % datadir = [homedir, '\Data\', subcode, '_', p_init,'\'];
 clear homedir
 clear datetag p_init subcode
 
@@ -104,7 +100,7 @@ if run_num == 0
     trials = 3;
 else
     % main exp
-    blocks = 3; % should be 4
+    blocks = 4; % was 3 in 060922 exp
     trials = size(subconds,2); % should be 7
 end
 
@@ -186,7 +182,7 @@ for b = 1:blocks
 end
 
 clear b t c ctr
-clear row_block row_trial row_TR
+clear row_block row_trial 
 
 % Save so far
 save([datadir, filename]);
@@ -200,7 +196,7 @@ KbName('UnifyKeyNames');
 
 % Restrict for all keys except %5 (trigger) when doing kbchecks in psychtoolbox
 keynames = KbName({'5%'});
-RestrictKeysForKbCheck(keynames);
+%RestrictKeysForKbCheck(keynames);
 clear keynames ans
 
 % Suppress output from keyboard - to stop trigger popping into command window - ADD IN LATER
@@ -216,14 +212,15 @@ PsychDefaultSetup(2);
 
 %Choosing the display
 screens=Screen('Screens'); screenNumber=max(screens); clear screens
-backgroundCol = [128 128 128];
-%Open Screen
-% [window, windowRect] = PsychImaging('OpenWindow', screenNumber,backgroundCol);
-[window, windowRect] = Screen('OpenWindow', screenNumber,backgroundCol);
-% [window, windowRect]=Screen('OpenWindow', screenNumber,[], [10 20 600 300]); % small debugging window
+% backgroundCol = [128 128 128]; grey - too bright HDJ edit 061023
+backgroundCol = [0 0 0]; % black HDJ edit 061023
+textCol = [255 255 0]; % yellow HDJ edit 061023
 
+%Open Screen
+%[window, windowRect] = PsychImaging('OpenWindow', screenNumber, 255/2);
+[window, windowRect]=Screen('OpenWindow', screenNumber, backgroundCol);
 % Set screen parameters
-Screen('TextSize', window, 40); % was 40 12/4
+Screen('TextSize', window, 96);
 
 % Set up alpha-blending for smooth (anti-aliased) lines --> fixation cross below wont run without it
 Screen('BlendFunction', window, 'GL_SRC_ALPHA', 'GL_ONE_MINUS_SRC_ALPHA');
@@ -237,9 +234,7 @@ clear ans
 %% General instructions & instruction things
 
 % Instruction
-DrawFormattedText(window, sprintf('Please move the body \n part instructed on screen \n for the whole time the \n message is on screen\n\n Please also try to keep \n your head as still as possible \n\n Thank you!'), 'center', 'center', [0 0 0]);
-% DrawFormattedText(window, sprintf('Please move the body part instructed on screen \n for the whole time the message is on screen\n\n Please also try to keep your head as still as possible \n\n Thank you!'), 'center', 'center', [0 0 0]);
-
+DrawFormattedText(window, sprintf('Please move the body part instructed on screen \n for the whole time the message is on screen\n\n Please also try to keep your head as still as possible \n\n Thank you!'), 'center', 'center', textCol);
 Screen('Flip', window);
 
 % Wait
@@ -247,13 +242,13 @@ WaitSecs(3*TR);
 clear ans
 
 % Set generic rest message
-msg_rest = sprintf('Please lie still');
-% msg_rest = sprintf('Please rest (lie still)');
+msg_rest = sprintf('Please rest (lie still)');
+
 
 %% Wait for first trigger then pause for dead TRs
 
 % Say we are waiting (for trigger)
-DrawFormattedText(window, sprintf('Waiting for scanner'), 'center', 'center', [0 0 0]);
+DrawFormattedText(window, sprintf('Waiting for scanner'), 'center', 'center', textCol);
 Screen('Flip', window);
 
 % Wait for trigger
@@ -268,7 +263,6 @@ dotCol2 = backgroundCol;
 screenHeight = windowRect(4); % Height of the screen in pixels
 lowerHalfRect = [0 screenHeight/2 windowRect(3) screenHeight]; % Define the rectangle for the lower half of the screen
 maxDuration = (TRsmove*TR)-TR;% This seems to be the only way not to add 70ms to the trial time; Max duration of flickering in seconds
-
 %% Event loop - Loop through all timing events in timings mat
 
 % el = 1;
@@ -289,20 +283,19 @@ for el = 1:(size(timings,2))
         % % Rest
 
         % Present move message on screen
-        DrawFormattedText(window, msg_rest, 'center', 'center', [0 0 0]);
-
-    elseif ismember(event_type, subconds)
-        % % Movement
-        DrawFormattedText(window, sprintf('%s', cond_names(event_type)), 'center', 'center', [0 0 0]);
+        DrawFormattedText(window, msg_rest, 'center', 'center', textCol);
         
-       
+    elseif ismember(event_type, subconds)
+        % Present move message on screen
+        DrawFormattedText(window, sprintf('Please move your %s', cond_names(event_type)), 'center', 'center', textCol);
+      
     else
     end
-
+    
     % Flip screen to reveal
     Screen('Flip', window);
-
-     if ismember(event_type, subconds)
+    
+    if ismember(event_type, subconds)
         % Flickr
         % Set up timing
         t1 = GetSecs(); % Get the initial time
@@ -323,7 +316,7 @@ for el = 1:(size(timings,2))
             end
             
             % Draw the dot
-            DrawFormattedText(window, sprintf('Please move your %s', cond_names(event_type)), 'center', 'center', [0 0 0]);
+            DrawFormattedText(window, sprintf('Please move your %s', cond_names(event_type)), 'center', 'center', textCol);
             Screen('FillOval', window, dotCol, CenterRect([0 0 dotSize dotSize], lowerHalfRect));
             Screen('Flip', window);
             

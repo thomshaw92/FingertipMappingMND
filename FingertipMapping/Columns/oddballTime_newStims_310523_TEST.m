@@ -1,4 +1,11 @@
 
+% Edited 020623
+% Reduced number of trials
+% Turned off tactorson and edited so this works
+% commented keyboard lock
+% Moved placement of some debugging visual cues
+
+
 % % TO DO
 % Change things for PC - homedir (116)
 % CHECK WHAT NUMBERS COME OUT OF BUTTON BOX AND ADJUST ISCOR CALC FOR THIS
@@ -81,7 +88,7 @@ taczeros = tacorder(1, num_tactors+1:end);
 
 % Turn things on = 1, or off = 0
 psychvis = 1;
-tactorsOn = 1;
+tactorsOn = 0;
 
 % Record from thumb for manipulation check? 1 = yes, 0 = no
 record_thumb = 0;
@@ -133,12 +140,9 @@ clear ans
 
 %% Make dir for that participant in Data dir if it doesn't exist already
 
-% Set home directory
-if scannerPC == 0
-    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\';%'/Users/uqhdemp1/Documents/2022/Columns II/Scanner task'; % office mac
-else
-    homedir = 'C:\Users\meduser\Documents\FingertipMappingMND\Columns\'; %'ADD'; % ADD FOR STIMS PC
-end
+% Set home directory: the folder this script is in (current folder if run as a selection)
+homedir = fileparts(mfilename('fullpath'));
+if isempty(homedir), homedir = pwd; end
 
 % Set data directory
 if scannerPC == 0
@@ -181,7 +185,7 @@ if run_num == 0
     blocks = 1;
 else
     % main exp
-    trials = 30; % should be 30 -  otherwise 20min blocks
+    trials = 10; % EDITED % should be 30 -  otherwise 20min blocks
     blocks = 2; % should be 2
 end
 
@@ -243,16 +247,18 @@ clear b t c ct
 % Make sure any old audio stuff is closed
 PsychPortAudio('Close');
 
-% Initialises sound driver...the 1 pushes for low latency
-InitializePsychSound(1);
+if tactorsOn == 1
+    % Initialises sound driver...the 1 pushes for low latency
+    InitializePsychSound(1);
 
-% Initialise two sound buffers for the two sounds
-pahandle = PsychPortAudio('Open', [], [], 2, Fs, num_chans, 0); % for the first played sound
+    % Initialise two sound buffers for the two sounds
+    pahandle = PsychPortAudio('Open', [], [], 2, Fs, num_chans, 0); % for the first played sound
 
-% % play test sound - load into buffer then play then wait
-PsychPortAudio('FillBuffer', pahandle, testall); PsychPortAudio('Start', pahandle, 1, 0); WaitSecs(1);
-clear testall ans
-
+    % % play test sound - load into buffer then play then wait
+    PsychPortAudio('FillBuffer', pahandle, testall); PsychPortAudio('Start', pahandle, 1, 0); WaitSecs(1);
+    clear testall ans
+else
+end
 
 % % Keyboard - note some key restrictions added later below
 % improve portability of your code across operating systems 
@@ -260,7 +266,7 @@ KbName('UnifyKeyNames');
 
 % Suppress output from keyboard - if at the scanner
 if scannerPC == 1
-    ListenChar(2);
+    % ListenChar(2);
 else
 end
 
@@ -301,8 +307,8 @@ end
 
 if psychvis == 1
     % Instruction
-    DrawFormattedText(window, sprintf('Watch the fixation cross through the whole experiment\n\n and do not move (please)'), 'center', 'center', [0 0 0]);
-    Screen('Flip', window);
+    DrawFormattedText(window, sprintf('Instruction'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+    sprintf('Instruction')
 else
 end
 
@@ -386,9 +392,12 @@ for block = 1:blocks
         %% Run stimulation
 
         if psychvis == 1
+                                % FOR DEBUGGING ONLY - Tells you dead start
+                                DrawFormattedText(window, sprintf('redraw fix'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                                sprintf('redraw fix')
+                                
             % Redraw black fixation (to remove red/green if there on prev trial)
-            Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
-            Screen('Flip', window);
+            % Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2); Screen('Flip', window);
         else
         end
 
@@ -411,8 +420,8 @@ for block = 1:blocks
                 while ~timedout_tr
                     if psychvis == 1  
                         % say we are waiting
-                        DrawFormattedText(window, sprintf('Waiting for trigger'), 'center', 'center', [0 0 0]);
-                        Screen('Flip', window);
+                        DrawFormattedText(window, sprintf('Waiting for trigger'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                        sprintf('Waiting for trigger')
                     else
                     end
                     
@@ -436,14 +445,22 @@ for block = 1:blocks
                     
                     % Start both timers
                     t0 = GetSecs; tic
+                    
+                                    % FOR DEBUGGING ONLY - Tells you dead start
+                                    DrawFormattedText(window, sprintf('dead t1 - start'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                                    sprintf('dead t1 - start')
                 end
                 
                 clear keyCode timedout_tr
                 
                 if psychvis == 1
+                                    % FOR DEBUGGING ONLY
+                                    DrawFormattedText(window, sprintf('redraw fix after t1 dead'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                                    sprintf('redraw fix after t1 dead')
+                                    
                     % Redraw black fixation
-                    Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
-                    Screen('Flip', window);
+                    % Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
+                    % Screen('Flip', window);
                 else
                 end
             
@@ -453,7 +470,11 @@ for block = 1:blocks
                 % Wait (first dead TRs)
                 WaitSecs('UntilTime', t0 + timings(4,tm) );
                 clear ans
-
+                
+                                % FOR DEBUGGING ONLY - Tells you program end
+                                DrawFormattedText(window, sprintf('dead t1 - end'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                                sprintf('dead t1 - end')
+                                
                 % Add to timings - first dead TRs
                 timings(1,tm) = toc; tic
                 timings(2,tm) = sum(timings(1,:));
@@ -466,16 +487,23 @@ for block = 1:blocks
         % Add to timings counter - Stimulation
         tm = tm+1;
         
-                % FOR DEBUGGING ONLY - Tells you what freq and oddball
-%                 DrawFormattedText(window, sprintf('freq %d, oddball %d', freq, oddfing), 'center', 'center', [0 0 0]); Screen('Flip', window);
-        % Tell operator which freq is playing, and which is the target
-        % finger
-        sprintf('freq %d, oddball %d', freq, oddfing)
+        if tactorsOn == 1
+                % Play sound - load then play
+                PsychPortAudio('FillBuffer', pahandle, playstim); PsychPortAudio('Start', pahandle, 1, 0);
+        else
+        end
         
-        % Play sound - load then play
-        PsychPortAudio('FillBuffer', pahandle, playstim); PsychPortAudio('Start', pahandle, 1, 0);
+                % FOR DEBUGGING ONLY - Tells you what freq and oddball
+                 DrawFormattedText(window, sprintf('freq %d, oddball %d', freq, oddfing), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                 sprintf('freq %d, oddball %d', freq, oddfing)
+                
         WaitSecs('UntilTime', t0 + timings(4,tm) );
         clear ans playstim
+        
+                                    % FOR DEBUGGING ONLY - Presents blue fixation to say stimulation is over
+                                    % DrawFormattedText(window, sprintf('blue fixation after stim - ISI'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                                    % sprintf('blue fixation after stim - ISI')
+                                    % Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 1], [xCentre yCentre], 2); Screen('Flip', window);
 
         % Add to timings - Stimulation
         timings(1,tm) = toc; tic
@@ -487,9 +515,6 @@ for block = 1:blocks
         timings(5,tm) = freq;
         
         clear freq
-
-                % FOR DEBUGGING ONLY - Presents blue fixation to say stimulation is over
-                % Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 1], [xCentre yCentre], 2); Screen('Flip', window);
 
 
         %% Post stimulation period
@@ -580,15 +605,17 @@ for block = 1:blocks
         % End trial loop
     end
         
-    % tell experimenter that nothing is playing on stims
-    sprintf('stims not playing')
     
     %% end Dead TRs
     
     if psychvis == 1
-        % Redraw black fixation (to remove red/green if there on prev trial)
-        Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
-        Screen('Flip', window);
+%         % Redraw black fixation (to remove red/green if there on prev trial)
+%         Screen('DrawLines', window, allCoords, lineWidthPix, [0 0 0], [xCentre yCentre], 2);
+%         Screen('Flip', window);
+
+                % FOR DEBUGGING ONLY - Tells you dead start
+                 DrawFormattedText(window, sprintf('DEAD start'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                 sprintf('DEAD start')
     else
     end
     
@@ -598,8 +625,9 @@ for block = 1:blocks
     WaitSecs('UntilTime', t0 + timings(4,tm) );
     clear ans
     
-    % ADDED_H23 tell exp dead TRs over
-    sprintf('Dead TRs over')
+                % FOR DEBUGGING ONLY - Tells you dead end
+                 DrawFormattedText(window, sprintf('DEAD end'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                 sprintf('DEAD end')
 
     % Add to timings - end dead TRs
     timings(1,tm) = toc; tic
@@ -614,10 +642,13 @@ for block = 1:blocks
     ALLoutput.(blockname) = output;
     save([datadir, filename]);
     clear output blockname
-    
-    
+      
 % End block loop
 end
+
+                % FOR DEBUGGING ONLY - Tells you end block loop
+                 DrawFormattedText(window, sprintf('Block end'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                sprintf('Block end')
 
 % Get run timing
 time.intended = round(sum(timings(row_t_realTRtime,:))/60,4);
@@ -717,8 +748,8 @@ perccorr = round(perccorr);
 
 if psychvis == 1
     % Present info
-    DrawFormattedText(window, sprintf('Yay! Run %d is over.\n\n You got %d%% correct.\n\n You missed %d%%.\n\n Please keep lying still :)', run_num, perccorr, percmiss), 'center', 'center', [0 0 0]);
-    Screen('Flip', window);
+    DrawFormattedText(window, sprintf('Yay! Run %d is over.\n\n You got %d%% correct.\n\n You missed %d%%.\n\n Please keep lying still :)', run_num, perccorr, percmiss), 'center', 'center', [0 0 0]); Screen('Flip', window);
+    sprintf('Yay! Run %d is over')
 else
 end
 
@@ -726,7 +757,6 @@ end
 WaitSecs(1*TR);
 
 clear perccorr percmiss
-clear allCoords lineWidthPix screenNumber window windowRect xCentre yCentre
 
 
 %% Calc % corr separately for freq 1 and freq 2 - responded trials
@@ -830,11 +860,14 @@ clear row_t_realTRtime
 
 %% Final save
 
-% ADDED_H23 tell exp closing
-sprintf('End calcs - closing')
+                % FOR DEBUGGING ONLY - Tells you program end
+                 DrawFormattedText(window, sprintf('program end'), 'center', 'center', [0 0 0]); Screen('Flip', window);
+                 sprintf('program end')
+
     
 save([datadir, filename]);
 
 sca
 
 clear psychtool ans
+clear allCoords lineWidthPix screenNumber window windowRect xCentre yCentre

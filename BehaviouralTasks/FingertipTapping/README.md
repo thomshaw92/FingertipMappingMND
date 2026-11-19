@@ -15,14 +15,14 @@ Ensure that you have the following software installed:
 3. Set up a new conda environment using the following command: `conda create -n psychopy python=3.6`.
 4. Activate the environment using the command: `conda activate psychopy`.
 5. Install PsychoPy in the environment using the command: `pip install psychopy`.
-6. Download the fingertip-tapping.py script and save it in a convenient location.
+6. Download the fingertip-tapping-task.py script and save it in a convenient location.
 
 ## Running the experiment
 
 1. Open Command Prompt.
 2. Activate the PsychoPy environment using the command: `conda activate psychopy`.
-3. Navigate to the directory where you saved the fingertip-tapping.py script using the `cd` command. For example, if you saved the script in a folder called 'Experiments' on your desktop, you would use the command: `cd Desktop\Experiments`.
-4. Run the script using the command: `python fingertip-tapping.py`.
+3. Navigate to the directory where you saved the fingertip-tapping-task.py script using the `cd` command. For example, if you saved the script in a folder called 'Experiments' on your desktop, you would use the command: `cd Desktop\Experiments`.
+4. Run the script using the command: `python fingertip-tapping-task.py`.
 
 Follow the on-screen instructions to carry out the experiment.
 
@@ -30,8 +30,7 @@ Follow the on-screen instructions to carry out the experiment.
 
 The script will save the experiment data in a CSV file at a location you specify. Each row in the file represents a trial, with columns for participant ID, hand, date & time, finger, taps, and average taps. At the end of the data for each participant, the averages for each finger are written to the CSV file. 
 
-### NB - the data.csv file must already exist 
-You can create one by making a new text file in the location and naming it data.csv
+If the file doesn't exist, the script creates it with a header row. If it does, new results are appended to it.
 
 If there is an error writing to the specified file (for example, if the file is open in another program), the data will be saved to a temporary file in the same location.
 
